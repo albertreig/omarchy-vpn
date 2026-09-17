@@ -123,12 +123,16 @@ function parseBackendIds(raw) {
 }
 
 // The setup hint the panel shows in place of "install a VPN tool", and the
-// command that clears it. Both come from the same backend — the first visible
-// one with a hint — so the line and what clicking it runs never disagree. The
-// controller passes plain { id, hint, command } entries, read in its own binding.
+// command that clears it. Both come from the same backend — the first visible,
+// undetected one with a hint — so the line and what clicking it runs never
+// disagree. A detected backend's hint is ignored: the contract says a hint
+// explains why a tool is not detected, and `setup` over IPC runs the command
+// without the panel's own check that nothing is listed. The controller passes
+// plain { id, detected, hint, command } entries, read in its own binding.
 function pickSetup(entries, hiddenIds) {
   for (var i = 0; i < entries.length; i++) {
     var entry = entries[i]
+    if (entry.detected === true) continue
     if (hiddenIds.indexOf(String(entry.id)) !== -1) continue
     var hint = entry.hint === undefined || entry.hint === null ? "" : String(entry.hint)
     if (hint === "") continue

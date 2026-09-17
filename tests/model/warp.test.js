@@ -232,6 +232,30 @@ test("warpSetupHint says what stops the backend from appearing", () => {
   eq(Warp.warpSetupHint({ present: true, registered: true }), "")
 })
 
+test("a registered WARP has nothing to set up, even with warp-svc down", () => {
+  // The device stays listed after warp-svc stops (see warpProbeResult), and a
+  // listed tool must not offer `sudo systemctl` through IPC `setup`.
+  const probe = { present: true, registered: true, daemonDown: true }
+  eq(Warp.warpSetupState(probe), "")
+  eq(Warp.warpSetupHint(probe), "")
+  eq(Warp.warpSetupCommand(probe), "")
+  eq(Warp.warpSetupCommand({ present: true, registered: true, needsTos: true }), "")
+})
+
+test("a setup state reads the same as hint, command and failure", () => {
+  for (const state of Object.keys(Warp.WARP_SETUP)) {
+    const entry = Warp.WARP_SETUP[state]
+    eq(entry.hint.indexOf(entry.command) !== -1, true)
+    eq(entry.failure.indexOf(entry.command) !== -1, true)
+  }
+  // warp-cli's own messages, from its binary.
+  const missing = 'Missing registration. Try running: "warp-cli registration new"'
+  eq(Warp.warpFailureState(TOS), "terms")
+  eq(Warp.warpFailureState(missing), "registration")
+  eq(Warp.warpFailureState("IPC client reached EOF, daemon connection lost"), "service")
+  eq(Warp.describeWarpFailure(missing, "x"), Warp.WARP_SETUP.registration.failure)
+})
+
 test("warpSetupCommand runs what the hint names, and nothing once set up", () => {
   eq(Warp.warpSetupCommand({ present: false }), "")
   eq(Warp.warpSetupCommand({ present: true, needsTos: true }), "warp-cli registration show")

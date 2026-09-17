@@ -204,8 +204,11 @@ Item {
       // One status read belongs to the probe, as Windscribe's does: the
       // controller's refresh() for this round already ran and returned while
       // `detected` was still false, so without it a live tunnel would read as
-      // "Not connected" until the next poll. Not refresh(), which would also
-      // start polling settings for a backend that may be hidden.
+      // "Not connected" until the next poll. The backend cannot tell whether it
+      // is hidden, so a hidden WARP pays this one read too — once per probe,
+      // which is shell start and each reopen of the panel, never on the poll.
+      // Not refresh(): the contract keeps detect() from falling through to it,
+      // and it would read settings as well.
       if (root.detected && !statusProcess.running) statusProcess.running = true
     }
   }

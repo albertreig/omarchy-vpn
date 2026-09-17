@@ -107,7 +107,7 @@ Item {
   // command to offer; the hint is then text and nothing more. The properties are
   // read here rather than inside Shared.pickSetup so the binding tracks them.
   readonly property var _setup: Shared.pickSetup(backends.map(function(backend) {
-    return { id: backend.backendId, hint: backend.setupHint, command: backend.setupCommand }
+    return { id: backend.backendId, detected: backend.detected, hint: backend.setupHint, command: backend.setupCommand }
   }), hiddenBackendIds)
   readonly property string setupHint: _setup.hint
   readonly property string setupCommand: _setup.command

@@ -94,7 +94,8 @@ as clickable and runs the command in a floating terminal — the same path as
 `authRequired` — because what it fixes needs a person at the keyboard: a terms
 prompt, a sudo password, a sign-in. The controller takes the command from the
 same backend whose hint it shows, so the line and what clicking it runs never
-disagree. It is also on IPC as `setup`.
+disagree. A detected backend's hint and command are ignored, since a tool that
+is listed has nothing to set up. It is also on IPC as `setup`.
 
 ## Adding a backend
 

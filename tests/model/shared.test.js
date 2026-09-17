@@ -28,6 +28,9 @@ test("pickSetup takes the hint and command from the first visible backend with a
   // Hiding WARP moves to the next hint, and never pairs it with WARP's command.
   eq(Shared.pickSetup(entries, ["warp"]), { hint: "No profiles", command: "" })
   eq(Shared.pickSetup(entries, ["warp", "networkmanager"]), { hint: "", command: "" })
+  // A detected backend has nothing to set up, whatever it says.
+  eq(Shared.pickSetup([{ id: "warp", detected: true, hint: "start the service", command: "sudo systemctl enable --now warp-svc" }], []),
+    { hint: "", command: "" })
   // A command without a hint is not offered.
   eq(Shared.pickSetup([{ id: "x", hint: "", command: "run me" }], []), { hint: "", command: "" })
 })
