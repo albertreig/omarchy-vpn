@@ -16,10 +16,12 @@ surrounding workflow.
 | `ProtonBackend.qml` | Proton VPN, via the `protonvpn` CLI |
 | `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
 | `WindscribeBackend.qml` | Windscribe, via `windscribe-cli` |
+| `WarpBackend.qml` | Cloudflare WARP, via `warp-cli` |
+| `NetworkManagerBackend.qml` | OpenVPN, WireGuard, OpenConnect and VPNC, via NetworkManager |
 | `AmneziaWgBackend.qml` | AmneziaWG, via `awg` and `awg-quick` |
 | `NetworkManagerBackend.qml` | OpenVPN, WireGuard, OpenConnect and VPNC, via NetworkManager |
 | `model/Shared.js` | Helpers every backend leans on, and the widget's own settings |
-| `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/AmneziaWg.js`, `model/NetworkManager.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
+| `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/Warp.js`, `model/AmneziaWg.js`, `model/NetworkManager.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
 
 Each backend is a pair: the `.qml` file holds the `Process` plumbing, and the
 matching `model/*.js` holds everything that can be decided without running a
@@ -39,7 +41,7 @@ duck-types, so a backend that omits something simply renders as blank.
 
 | Property | Meaning |
 |----------|---------|
-| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `amneziawg`, `networkmanager`) |
+| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `warp`, `amneziawg`, `networkmanager`) |
 | `label` | Name on the switcher chip and hero. Also what `preferredBackend` stores, so it must match that enum in `manifest.json` exactly |
 | `installNames` | What a user would install to make this backend useful, as a list. The panel joins them into its "install something" line when no tool is detected. Usually one name and the same as `label` — NetworkManager is the exception, offering `["OpenVPN", "WireGuard", "OpenConnect", "VPNC"]`, because nobody installs a connection manager to get a VPN |
 | `glyph` | Nerd Font character for the hero icon |
@@ -86,6 +88,14 @@ It may also expose `setupHint`: one line explaining why it is not `detected`
 and what would change that. The panel shows the first non-empty hint in place
 of its own "install a VPN tool" line, which is the wrong advice for a tool that
 is installed and merely has nothing to connect to yet.
+
+A backend with a `setupHint` may add `setupCommand`: the shell command that
+clears it, such as `warp-cli registration show`. The panel then draws the hint
+as clickable and runs the command in a floating terminal — the same path as
+`authRequired` — because what it fixes needs a person at the keyboard: a terms
+prompt, a sudo password, a sign-in. The controller takes the command from the
+same backend whose hint it shows, so the line and what clicking it runs never
+disagree. It is also on IPC as `setup`.
 
 ## Adding a backend
 
@@ -353,6 +363,25 @@ payload means traffic is being blocked right now and is only reported while the
 tunnel is down; the setting itself is read separately with
 `mullvad lockdown-mode get`, because the case that matters — Mullvad connected,
 another backend about to take over — is exactly when the payload omits it.
+
+**WARP has modes, not places.** Cloudflare routes through the nearest data
+centre and deliberately keeps the user's country as the exit location, so there
+is no list of countries to offer. `targets` are WARP's tunnel modes, and only the
+ones that carry the machine's traffic: DNS-only and proxy modes would leave the
+switch showing a tunnel that protects nothing. `connectTo` sets the mode only
+when it differs from the one `settings list` last reported, then connects — the
+same stop-on-failure chain as Mullvad's, for the same reason.
+
+**WARP's terms are the user's to accept.** Without a TTY, every `warp-cli`
+command prints `Please accept the WARP Terms of Service …` and does nothing until
+the terms were accepted once, and `--accept-tos` would accept them silently. The
+backend never passes it. The refusal exits 1 and is recognised from that line,
+so the error names the fix, and `setupHint` tells the user to run
+`warp-cli registration show` in a terminal.
+`detected` also needs a registration, since an unregistered client has nothing to
+bring up; a registration probe that fails after a good one keeps the device
+listed, so a stopped `warp-svc` shows its error on the chip instead of taking the
+chip away.
 
 **Why OpenVPN, WireGuard, OpenConnect and VPNC share one backend.** Same listing
 call, same teardown, same secret-agent problem, and no settings of their own on

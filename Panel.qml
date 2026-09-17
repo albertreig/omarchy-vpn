@@ -77,6 +77,21 @@ Panel {
     var list = Shared.sentenceList(names)
     return list === "" ? "" : "Install " + list + " to use this widget."
   }
+  // The status line is the setup hint, and that hint's backend knows the
+  // command that clears it: clicking the line runs it in a terminal.
+  readonly property bool setupActionable: !providersOpen && !backend
+    && vpn.detectedBackends.length === 0 && vpn.setupHint !== "" && vpn.setupCommand !== ""
+
+  // Same path as a backend's authRequired: the fix needs a person at a keyboard
+  // (a terms prompt, a sudo password), so a terminal owns it and the panel steps
+  // aside. Reopening the panel re-probes every backend, which is what brings the
+  // newly set-up tool in.
+  function runSetupCommand() {
+    if (!root.bar || vpn.setupCommand === "") return
+    root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(vpn.setupCommand))
+    root.close()
+  }
+
   readonly property string statusLine: {
     if (providersOpen) return ""
     if (vpn.notice !== "") return vpn.notice
@@ -401,6 +416,13 @@ Panel {
     function refresh(): string { vpn.refreshAll(true); vpn.refreshPublicIp(); return "ok" }
     function status(): string { return vpn.barSummary }
     function ip(): string { return vpn.publicIp !== "" ? vpn.publicIp : "unknown" }
+    // The command that clears the setup hint, run in a terminal as a click on
+    // the hint would. Answers "none" when nothing needs setting up.
+    function setup(): string {
+      if (vpn.setupCommand === "") return "none"
+      root.runSetupCommand()
+      return vpn.setupCommand
+    }
     function backends(): string {
       return vpn.availableBackends.map(function(b) { return b.backendId }).join(" ")
     }
@@ -688,10 +710,28 @@ Panel {
             visible: root.statusLine !== ""
             width: parent.width
             text: root.statusLine
-            color: root.statusIsError ? root.urgent : root.dim
+            // Brighter when clicking it does something, the same cue as the
+            // copyable public IP.
+            color: root.statusIsError ? root.urgent : (root.setupActionable ? root.foreground : root.dim)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
+            font.underline: root.setupActionable && setupMouse.containsMouse
             wrapMode: Text.WordWrap
+
+            MouseArea {
+              id: setupMouse
+              anchors.fill: parent
+              enabled: root.setupActionable
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.runSetupCommand()
+            }
+
+            PanelToolTip {
+              visible: setupMouse.containsMouse && root.setupActionable
+              text: "Open a terminal and run: " + vpn.setupCommand
+              fontFamily: root.fontFamily
+            }
           }
 
           Column {
