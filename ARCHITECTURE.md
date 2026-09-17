@@ -17,10 +17,10 @@ surrounding workflow.
 | `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
 | `WindscribeBackend.qml` | Windscribe, via `windscribe-cli` |
 | `WarpBackend.qml` | Cloudflare WARP, via `warp-cli` |
-| `AmneziaWgBackend.qml` | AmneziaWG, via `awg` and `awg-quick` |
 | `NetworkManagerBackend.qml` | OpenVPN, WireGuard, OpenConnect and VPNC, via NetworkManager |
+| `AmneziaWgBackend.qml` | AmneziaWG, via `awg` and `awg-quick` |
 | `model/Shared.js` | Helpers every backend leans on, and the widget's own settings |
-| `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/Warp.js`, `model/AmneziaWg.js`, `model/NetworkManager.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
+| `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/Warp.js`, `model/NetworkManager.js`, `model/AmneziaWg.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
 
 Each backend is a pair: the `.qml` file holds the `Process` plumbing, and the
 matching `model/*.js` holds everything that can be decided without running a
