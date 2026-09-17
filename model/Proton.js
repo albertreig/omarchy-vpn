@@ -53,6 +53,75 @@ function protonNextRead(state) {
   return ""
 }
 
+// Whether a finished probe means the poll owes a `protonvpn status`, and what
+// to remember for the next probe.
+//
+// Every `protonvpn` connects to the Secret Service, reads the Default
+// collection, and exits. Done on every tick, that connect-read-disconnect cycle
+// trips a race in gnome-keyring-daemon: the client is gone before the property
+// read completes, the getter returns NULL without setting an error, and GDBus
+// aborts the whole daemon, dropping every other application's Secret Service
+// connection with it (#42). Reading less often only makes that rarer. So the
+// poll does not read the status to learn whether it changed. It asks
+// NetworkManager (`protonTunnel`) and reads when that answer moves. The Load row
+// is then as old as the last read, until the panel is opened.
+//
+// `lastTunnel` is the previous fingerprint, or one of two markers:
+//
+//   undefined  a status read is already under way — startup, or an action the
+//              widget settles itself — so record what the probe saw and let
+//              that read answer, rather than spend a second one on the news.
+//   null       nothing trustworthy to compare with: the last status read
+//              failed, or nmcli could not answer. Retry once a minute, not
+//              every tick. A failing keyring is the last thing to hammer, and
+//              without nmcli nothing cheaper says when to look.
+//
+// Signed out it never asks: nothing connects until somebody signs in, and that
+// is a forced refresh — opening the panel — away.
+var PROTON_RETRY_TICKS = 4
+
+function protonProbe(state) {
+  var known = state || {}
+  if (known.signedOut) return { statusDue: false, lastTunnel: known.lastTunnel }
+
+  var retry = (known.sinceStatus || 0) >= PROTON_RETRY_TICKS
+  if (known.exitCode !== 0) return { statusDue: retry, lastTunnel: null }
+
+  var tunnel = protonTunnel(known.raw)
+  if (known.lastTunnel === undefined) return { statusDue: false, lastTunnel: tunnel }
+  if (known.lastTunnel === null) return { statusDue: retry, lastTunnel: retry ? tunnel : null }
+  return { statusDue: tunnel !== known.lastTunnel, lastTunnel: tunnel }
+}
+
+// `nmcli -t -f NAME,STATE connection show --active` prints one `name:state`
+// line per connection. Every protocol the Proton client supports imports its
+// tunnel into NetworkManager as "ProtonVPN <server>" — "ProtonVPN Connection"
+// when the server has no name (`_get_servername` in
+// proton/vpn/backend/networkmanager/core/networkmanager.py) — and removes it on
+// a deliberate disconnect. The kill switch adds connections of its own,
+// "pvpn-killswitch" and its -ipv6 and -perm variants, which stay up while the
+// tunnel is down and must not read as one.
+//
+// The state is part of the answer because "active" includes "activating": a
+// connect started at a terminal shows up under its final name before it is up,
+// and a fingerprint of names alone would never move again once it finished.
+// Terse mode escapes ":" and "\" in a field with a backslash, so the last
+// unescaped colon is the separator.
+//
+// A fingerprint, not a status: only whether it changed is read, so several
+// matches are sorted rather than one of them picked.
+function protonTunnel(raw) {
+  var found = []
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var match = lines[i].trim().match(/^((?:[^\\:]|\\.)*):([^:]*)$/)
+    if (!match) continue
+    var name = match[1].replace(/\\(.)/g, "$1")
+    if (/^ProtonVPN /.test(name)) found.push(name + ":" + match[2])
+  }
+  return found.sort().join("\n")
+}
+
 // `protonvpn status` prints a plain-text block, not JSON:
 //
 //   Status: Connected

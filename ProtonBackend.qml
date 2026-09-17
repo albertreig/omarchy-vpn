@@ -83,6 +83,7 @@ Item {
     // Nothing else re-asks, because every one of these costs a Python start.
     if (force === true) {
       root._statusDue = true
+      root._lastTunnel = undefined
       root.signedOut = false
       root.countriesLoaded = false
       root._configLoaded = false
@@ -91,22 +92,15 @@ Item {
     detectProcess.running = true
   }
 
-  // Ticks of the controller's interval between status reads.
-  //
-  // Connected is every one. A tunnel that drops while the panel is closed leaves
-  // the chip claiming protection nobody has, and overstating protection is the
-  // one wrong answer here worth a Python start to avoid.
-  //
-  // Disconnected is every fourth. Understating it is harmless by comparison, and
-  // the only thing that turns disconnected into connected is somebody acting:
-  // through this widget, which re-reads on its own through settleTimer, or at a
-  // terminal, which the next slow tick catches within a minute.
-  //
-  // Signed out is never. The CLI cannot connect until somebody signs in, and
-  // that is a forced refresh — opening the panel — away.
-  readonly property int _statusEvery: signedOut ? 0 : (connected ? 1 : 4)
+  // Whether the status needs reading is asked of NetworkManager, not of the CLI,
+  // because a `protonvpn` on every tick crashes gnome-keyring-daemon — see
+  // protonProbe(). The probe is nmcli, which touches neither the keyring nor
+  // the lock. `_lastTunnel` is what it said last time, or one of the markers
+  // protonProbe() documents; undefined at startup, since a read is due anyway.
+  property var _lastTunnel: undefined
+  // Ticks since the last status read, for the once-a-minute retry.
   property int _sinceStatus: 0
-  // Ask on the next refresh whatever the cadence says. True at startup because
+  // Ask on the next refresh whatever the probe says. True at startup because
   // the first thing a probe wants is an answer.
   property bool _statusDue: true
 
@@ -118,14 +112,16 @@ Item {
 
   // Every non-hidden backend is polled on the interval whether or not the panel
   // is open, and `protonvpn` is Python: each invocation costs the best part of a
-  // CPU-second before it does any work. So the poll asks for the status alone
-  // once the other two have been answered, and asks for that on the cadence
-  // above rather than on every tick.
+  // CPU-second before it does any work, and a trip through the keyring. So the
+  // poll asks for the status alone once the other two have been answered, and
+  // asks for that only when the probe says the tunnel changed.
   function refresh() {
     if (!detected) return
 
     _sinceStatus += 1
-    if (_statusEvery > 0 && _sinceStatus >= _statusEvery) _statusDue = true
+    // Signed out, nothing connects until somebody signs in, which is a forced
+    // refresh away; there is nothing for the probe to catch.
+    if (!signedOut && !tunnelProcess.running) tunnelProcess.running = true
 
     _pump()
   }
@@ -156,9 +152,11 @@ Item {
   }
 
   // For the paths that have just changed something and need to see it land. The
-  // cadence is for the idle case; a settling action is not one.
+  // probe is for the idle case; a settling action is not one. These reads are
+  // what report the change, so the probe records it rather than asking again.
   function refreshNow() {
     _statusDue = true
+    _lastTunnel = undefined
     pumpTimer.restart()
   }
 
@@ -314,6 +312,29 @@ Item {
   }
 
   Process {
+    id: tunnelProcess
+    running: false
+    // Through a shell, so a missing nmcli is exit 127 and the retry path in
+    // protonProbe() rather than a process that never starts and never exits.
+    command: ["sh", "-c", "exec nmcli -t -f NAME,STATE connection show --active"]
+    stdout: StdioCollector { id: tunnelStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      var verdict = Proton.protonProbe({
+        signedOut: root.signedOut,
+        exitCode: exitCode,
+        raw: String(tunnelStdout.text || ""),
+        lastTunnel: root._lastTunnel,
+        sinceStatus: root._sinceStatus
+      })
+      root._lastTunnel = verdict.lastTunnel
+      if (verdict.statusDue) {
+        root._statusDue = true
+        pumpTimer.restart()
+      }
+    }
+  }
+
+  Process {
     id: statusProcess
     running: false
     command: Proton.protonCli(["status"])
@@ -327,6 +348,8 @@ Item {
         root.lastError = root.signedOut ? Proton.PROTON_SIGNIN_HINT : ""
       } else {
         root.lastError = Shared.elide(String(statusStderr.text || statusStdout.text || "") || "Could not read Proton VPN status", 140)
+        // Unanswered: the probe retries on its slow clock even if nothing moved.
+        root._lastTunnel = null
       }
       pumpTimer.restart()
     }
