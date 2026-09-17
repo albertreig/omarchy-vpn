@@ -122,6 +122,22 @@ function parseBackendIds(raw) {
   return ids
 }
 
+// The setup hint the panel shows in place of "install a VPN tool", and the
+// command that clears it. Both come from the same backend — the first visible
+// one with a hint — so the line and what clicking it runs never disagree. The
+// controller passes plain { id, hint, command } entries, read in its own binding.
+function pickSetup(entries, hiddenIds) {
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i]
+    if (hiddenIds.indexOf(String(entry.id)) !== -1) continue
+    var hint = entry.hint === undefined || entry.hint === null ? "" : String(entry.hint)
+    if (hint === "") continue
+    var command = entry.command === undefined || entry.command === null ? "" : String(entry.command)
+    return { hint: hint, command: command }
+  }
+  return { hint: "", command: "" }
+}
+
 function joinBackendIds(ids) {
   return ids.join(",")
 }

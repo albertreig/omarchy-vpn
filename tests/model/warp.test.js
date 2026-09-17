@@ -166,7 +166,6 @@ test("parseWarpRegistration reads the account type", () => {
   const registration = Warp.parseWarpRegistration(REGISTRATION)
   eq(registration.registered, true)
   eq(registration.accountType, "free")
-  eq(registration.managed, false)
   eq(Warp.warpAccountLabel("free"), "Free")
   eq(Warp.warpAccountLabel("limited"), "WARP+")
   eq(Warp.parseWarpRegistration(TOS).registered, false)
@@ -249,9 +248,54 @@ test("warpSetupCommand runs what the hint names, and nothing once set up", () =>
 
 test("warp failures are recognised from warp-cli's own messages", () => {
   eq(Warp.warpNeedsTos(TOS), true)
+  // The four daemon messages, as warp-cli 2026.7.1377 has them in its binary.
+  // The OS errors after the colon are illustrative; the prefixes are verbatim.
   eq(Warp.warpDaemonUnreachable("Unable to connect to the CloudflareWARP daemon: Connection refused (os error 111)"), true)
+  eq(Warp.warpDaemonUnreachable("Failed to communicate with WARP service over IPC: Connection reset by peer (os error 104)"), true)
   eq(Warp.warpDaemonUnreachable("Error communicating with daemon: broken pipe"), true)
+  eq(Warp.warpDaemonUnreachable("IPC client reached EOF, daemon connection lost"), true)
   eq(Warp.warpDaemonUnreachable("error: invalid value 'bogus' for '<MODE>'"), false)
   eq(Warp.describeWarpFailure(TOS, "x"), "Accept the WARP terms once: run warp-cli registration show in a terminal")
   eq(Warp.describeWarpFailure("", "WARP command failed"), "WARP command failed")
+})
+
+test("describeWarpFailure passes unrecognised errors through in warp-cli's words", () => {
+  // warp-cli's own refusal text, from its binary. A loose "not allowed" match
+  // used to stand in for a Zero Trust lock and would relabel errors like this.
+  eq(Warp.describeWarpFailure("Operation not authorized in this context.", "x"), "Operation not authorized in this context.")
+})
+
+test("warpCommandFailed treats the terms refusal as a failure whatever the exit code", () => {
+  eq(Warp.warpCommandFailed(0, CONNECTED), false)
+  eq(Warp.warpCommandFailed(1, ""), true)
+  eq(Warp.warpCommandFailed(1, TOS), true)
+  eq(Warp.warpCommandFailed(0, TOS), true)
+})
+
+test("warpProbeResult registers on a clean answer", () => {
+  const probe = Warp.warpProbeResult(0, REGISTRATION, "", Warp.parseWarpRegistration(""))
+  eq(probe.registration.registered, true)
+  eq(probe.registration.accountType, "free")
+  eq(probe.needsTos, false)
+  eq(probe.daemonDown, false)
+})
+
+test("warpProbeResult keeps a known registration when a later probe fails", () => {
+  const known = Warp.parseWarpRegistration(REGISTRATION)
+  // warp-svc stopped: the device stays listed, and the hint knows why.
+  const down = Warp.warpProbeResult(1, "", "Unable to connect to the CloudflareWARP daemon: Connection refused (os error 111)", known)
+  eq(down.registration, known)
+  eq(down.daemonDown, true)
+  // The terms refusal, even printed with exit 0, changes nothing either.
+  const tos = Warp.warpProbeResult(0, "", TOS, known)
+  eq(tos.registration, known)
+  eq(tos.needsTos, true)
+})
+
+test("warpProbeResult leaves a first failed probe unregistered", () => {
+  const probe = Warp.warpProbeResult(1, "", TOS, undefined)
+  eq(probe.registration.registered, false)
+  eq(probe.needsTos, true)
+  eq(Warp.warpSetupCommand({ present: true, needsTos: probe.needsTos, registered: probe.registration.registered }),
+    "warp-cli registration show")
 })

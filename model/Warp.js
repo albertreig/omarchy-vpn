@@ -77,6 +77,13 @@ function warpNeedsTos(output) {
   return /accept the warp terms of service/i.test(String(output || ""))
 }
 
+// Whether a warp-cli call failed. The terms refusal exits 1 today; the line is
+// checked as well, so a release that printed it with exit 0 would still not be
+// read as an answer.
+function warpCommandFailed(exitCode, output) {
+  return exitCode !== 0 || warpNeedsTos(output)
+}
+
 // warp-cli could not reach warp-svc: the service is stopped or not installed.
 // These are warp-cli's own messages (2026.7), taken from the binary rather than
 // guessed, so an unrelated failure that mentions a socket is not mistaken for a
@@ -92,19 +99,34 @@ function warpDaemonUnreachable(output) {
 }
 
 // `warp-cli --json registration show` answers with the account when this
-// device is registered. `managed` is a Zero Trust enrolment, which a user may
-// not be allowed to disconnect.
+// device is registered.
 function parseWarpRegistration(raw) {
-  var result = { registered: false, accountType: "", managed: false }
+  var result = { registered: false, accountType: "" }
   var payload = warpJson(raw)
   if (!payload) return result
   if (!payload.id && !payload.device_id && !payload.account) return result
 
   result.registered = true
-  result.managed = payload.managed === true
   var account = payload.account
   if (account && typeof account === "object") result.accountType = String(account.type || "")
   return result
+}
+
+// What one `registration show` probe tells the backend: the two setup blockers
+// it can run into, and the registration to keep. Only a clean answer may change
+// the registration. A refused or failed probe after a good one keeps the device
+// listed, and with it the chip that is the only way to see why WARP stopped
+// answering.
+function warpProbeResult(exitCode, stdout, stderr, previous) {
+  var output = String(stdout || "") + "\n" + String(stderr || "")
+  var needsTos = warpNeedsTos(output)
+  var registration = previous || parseWarpRegistration("")
+  if (!warpCommandFailed(exitCode, output)) registration = parseWarpRegistration(stdout)
+  return {
+    needsTos: needsTos,
+    daemonDown: warpDaemonUnreachable(output),
+    registration: registration
+  }
 }
 
 function warpAccountLabel(type) {
@@ -257,6 +279,8 @@ function describeWarpFailure(output, fallback) {
   if (warpNeedsTos(text)) return "Accept the WARP terms once: run warp-cli registration show in a terminal"
   if (/registration missing|not registered/i.test(text)) return "This device is not registered. Run: warp-cli registration new"
   if (warpDaemonUnreachable(text)) return "The WARP service is not responding. Start it with: sudo systemctl enable --now warp-svc"
-  if (/switch.*locked|not allowed/i.test(text)) return "Your organisation does not allow switching WARP from here"
+  // No case for a Zero Trust `switch_locked` refusal: warp-cli 2026.7.1377 has
+  // no message of its own for it, and matching a guess such as "not allowed"
+  // would relabel unrelated errors. Its own words are shown instead.
   return Shared.elide(text || fallback, 140)
 }

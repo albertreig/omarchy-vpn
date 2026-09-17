@@ -197,15 +197,10 @@ Item {
     stderr: StdioCollector { id: registrationStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root._probed = true
-      var output = String(registrationStdout.text || "") + "\n" + String(registrationStderr.text || "")
-      root._needsTos = Warp.warpNeedsTos(output)
-      root._daemonDown = Warp.warpDaemonUnreachable(output)
-
-      var parsed = Warp.parseWarpRegistration(String(registrationStdout.text || ""))
-      // Only a clean answer may change what is known. A refused or failed probe
-      // after a good one keeps the device listed, and with it the chip that is
-      // the only way to see why WARP stopped answering.
-      if (exitCode === 0 && !root._needsTos) root.registration = parsed
+      var probe = Warp.warpProbeResult(exitCode, registrationStdout.text, registrationStderr.text, root.registration)
+      root._needsTos = probe.needsTos
+      root._daemonDown = probe.daemonDown
+      root.registration = probe.registration
       // One status read belongs to the probe, as Windscribe's does: the
       // controller's refresh() for this round already ran and returned while
       // `detected` was still false, so without it a live tunnel would read as
@@ -223,7 +218,7 @@ Item {
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
     onExited: function(exitCode) {
       var output = String(statusStdout.text || "") + "\n" + String(statusStderr.text || "")
-      if (exitCode === 0 && !Warp.warpNeedsTos(output)) {
+      if (!Warp.warpCommandFailed(exitCode, output)) {
         root.applyStatus(String(statusStdout.text || ""))
         if (root._stage === "") root.lastError = ""
         return
@@ -265,9 +260,7 @@ Item {
     stderr: StdioCollector { id: commandStderr; waitForEnd: true }
     onExited: function(exitCode) {
       var output = String(commandStderr.text || "") + "\n" + String(commandStdout.text || "")
-      // The terms refusal exits 1 today; the message is checked as well so the
-      // error names the fix rather than a bare failure.
-      var failed = exitCode !== 0 || Warp.warpNeedsTos(output)
+      var failed = Warp.warpCommandFailed(exitCode, output)
 
       if (root._stage === "mode") {
         if (failed) {

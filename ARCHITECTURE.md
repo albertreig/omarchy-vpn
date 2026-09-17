@@ -17,7 +17,6 @@ surrounding workflow.
 | `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
 | `WindscribeBackend.qml` | Windscribe, via `windscribe-cli` |
 | `WarpBackend.qml` | Cloudflare WARP, via `warp-cli` |
-| `NetworkManagerBackend.qml` | OpenVPN, WireGuard, OpenConnect and VPNC, via NetworkManager |
 | `AmneziaWgBackend.qml` | AmneziaWG, via `awg` and `awg-quick` |
 | `NetworkManagerBackend.qml` | OpenVPN, WireGuard, OpenConnect and VPNC, via NetworkManager |
 | `model/Shared.js` | Helpers every backend leans on, and the widget's own settings |
@@ -41,7 +40,7 @@ duck-types, so a backend that omits something simply renders as blank.
 
 | Property | Meaning |
 |----------|---------|
-| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `warp`, `amneziawg`, `networkmanager`) |
+| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `warp`, `networkmanager`, `amneziawg`) |
 | `label` | Name on the switcher chip and hero. Also what `preferredBackend` stores, so it must match that enum in `manifest.json` exactly |
 | `installNames` | What a user would install to make this backend useful, as a list. The panel joins them into its "install something" line when no tool is detected. Usually one name and the same as `label` — NetworkManager is the exception, offering `["OpenVPN", "WireGuard", "OpenConnect", "VPNC"]`, because nobody installs a connection manager to get a VPN |
 | `glyph` | Nerd Font character for the hero icon |
@@ -75,7 +74,7 @@ so the controller can call it unconditionally.
 
 `toggleConnection()` is the backend's own idea of a default connection — Proton
 picks the fastest server; Mullvad reuses its stored relay constraint; Windscribe
-takes its best location; AmneziaWG connects the only local profile if there is
+takes its best location; WARP connects in whichever mode is already set; AmneziaWG connects the only local profile if there is
 exactly one, and otherwise asks the user to pick; NetworkManager does the same
 for its profiles.
 
