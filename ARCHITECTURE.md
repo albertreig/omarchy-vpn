@@ -170,16 +170,23 @@ not three. `_configLoaded` and `countriesLoaded` both mean *asked and answered* 
 latched on the answer, not on the answer being usable — and `detect(force)` is
 what clears them, which is the user opening the panel or pressing `r`.
 
-The status read that remains runs at the rate the answer can change, not at the
-controller's. Connected reads every tick: a tunnel that drops behind a closed
-panel leaves the chip claiming protection nobody has, and overstating protection
-is the one wrong answer worth a Python start to avoid. Disconnected reads every
-fourth — understating it is harmless by comparison, and the only thing that makes
-it connected is somebody acting, either through the widget (`refreshNow()`, which
-is what `settleTimer` and a finished action use, ignores the cadence) or at a
-terminal, which the next slow tick catches inside a minute. Signed out does not
-read at all. Idle goes from twelve spawns a minute to one, or to none, and a
-two-monitor desktop instantiates all of this twice.
+The status read that remains runs when the answer changes, not at the
+controller's rate, because every `protonvpn` is a connect-read-disconnect cycle
+against the Secret Service, and at the poll's rate that cycle aborts
+gnome-keyring-daemon, taking every other application's keyring connection with
+it ([#42](https://github.com/jkoestinger/omarchy-vpn/issues/42)). Each tick asks
+NetworkManager instead, through `nmcli -t -f NAME,STATE connection show
+--active`: every protocol the Proton client supports imports its tunnel there as
+`ProtonVPN <server>`. `protonTunnel()` reduces that to a fingerprint of name and
+state — the state, so a connect started at a terminal is seen finishing and not
+only starting — and `protonProbe()` reads the status when the fingerprint moves.
+A finished action (`refreshNow()`, which `settleTimer` also uses) and opening
+the panel read regardless, and tell the probe to record rather than ask again.
+A failed read, or an nmcli that cannot answer, retries once a minute instead of
+every tick, since a failing keyring is the last thing to hammer. Signed out
+neither probes nor reads. The price is a `Load` row as old as the last read. The
+probe also only notices a drop that NetworkManager notices; so did the CLI,
+which reads the same state.
 
 Signed out is the case that made this matter: `protonvpn status` exits 0 and
 prints `Status: Disconnected`, so `detected` stays true and the poll runs

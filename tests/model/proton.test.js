@@ -165,3 +165,70 @@ test("protonNextRead stops asking for what needs an account when signed out", ()
   eq(Proton.protonNextRead({ signedOut: true }), "")
   eq(Proton.protonNextRead({ signedOut: true, statusDue: true }), "status")
 })
+
+// The poll's probe; see protonTunnel and protonProbe for why it exists (#42).
+test("protonTunnel reads nothing from a machine with no Proton tunnel", () => {
+  // `nmcli -t -f NAME,STATE connection show --active`, verbatim, on a plain Wi-Fi link.
+  eq(Proton.protonTunnel("dmk-14992:activated\nlo:activated\n"), "")
+  eq(Proton.protonTunnel(""), "")
+  eq(Proton.protonTunnel(null), "")
+})
+
+test("protonTunnel fingerprints the Proton connection with its state", () => {
+  eq(Proton.protonTunnel("dmk-14992:activated\nProtonVPN CH#1129:activating\nlo:activated\n"),
+    "ProtonVPN CH#1129:activating")
+  // Same name, different state: a connect started at a terminal finishing.
+  eq(Proton.protonTunnel("ProtonVPN CH#1129:activated"), "ProtonVPN CH#1129:activated")
+  eq(Proton.protonTunnel("ProtonVPN Connection:activated"), "ProtonVPN Connection:activated")
+})
+
+test("protonTunnel ignores the kill switch's own connections", () => {
+  // These stay active while the tunnel is down; counting them would hide a drop.
+  eq(Proton.protonTunnel([
+    "pvpn-killswitch:activated",
+    "pvpn-killswitch-ipv6:activated",
+    "pvpn-killswitch-perm:activated"
+  ].join("\n")), "")
+})
+
+test("protonTunnel undoes nmcli's terse escaping and orders what it finds", () => {
+  eq(Proton.protonTunnel("ProtonVPN a\\:b:activated"), "ProtonVPN a:b:activated")
+  eq(Proton.protonTunnel("ProtonVPN NL#2:activated\nProtonVPN CH#1:deactivating"),
+    "ProtonVPN CH#1:deactivating\nProtonVPN NL#2:activated")
+})
+
+const probe = (state) => Proton.protonProbe(Object.assign({ exitCode: 0, sinceStatus: 0 }, state))
+
+test("protonProbe asks only when the fingerprint moves", () => {
+  const up = "ProtonVPN CH#1:activated"
+  eq(probe({ raw: "lo:activated", lastTunnel: "", sinceStatus: 40 }), { statusDue: false, lastTunnel: "" })
+  eq(probe({ raw: up, lastTunnel: "ProtonVPN CH#1:activated", sinceStatus: 40 }), { statusDue: false, lastTunnel: up })
+  eq(probe({ raw: up, lastTunnel: "" }), { statusDue: true, lastTunnel: up })
+  eq(probe({ raw: up, lastTunnel: "ProtonVPN CH#1:activating" }), { statusDue: true, lastTunnel: up })
+  eq(probe({ raw: "", lastTunnel: up }), { statusDue: true, lastTunnel: "" })
+})
+
+test("protonProbe records without asking when a read is already under way", () => {
+  // Startup, and every action the widget settles itself: the status is being
+  // read regardless, so a moved fingerprint is not news.
+  eq(probe({ raw: "ProtonVPN CH#1:activated", lastTunnel: undefined }),
+    { statusDue: false, lastTunnel: "ProtonVPN CH#1:activated" })
+})
+
+// A keyring that is failing is the one thing this must not hammer.
+test("protonProbe backs off to once a minute after a failed read", () => {
+  eq(probe({ raw: "ProtonVPN CH#1:activated", lastTunnel: null, sinceStatus: 1 }),
+    { statusDue: false, lastTunnel: null })
+  eq(probe({ raw: "ProtonVPN CH#1:activated", lastTunnel: null, sinceStatus: 4 }),
+    { statusDue: true, lastTunnel: "ProtonVPN CH#1:activated" })
+})
+
+test("protonProbe backs off to once a minute when nmcli cannot answer", () => {
+  eq(probe({ exitCode: 127, lastTunnel: "", sinceStatus: 1 }), { statusDue: false, lastTunnel: null })
+  eq(probe({ exitCode: 127, lastTunnel: "", sinceStatus: 4 }), { statusDue: true, lastTunnel: null })
+})
+
+test("protonProbe never asks a signed-out CLI", () => {
+  eq(probe({ signedOut: true, raw: "ProtonVPN CH#1:activated", lastTunnel: "" }), { statusDue: false, lastTunnel: "" })
+  eq(probe({ signedOut: true, exitCode: 1, sinceStatus: 99, lastTunnel: null }), { statusDue: false, lastTunnel: null })
+})
