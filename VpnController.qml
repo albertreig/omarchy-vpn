@@ -35,7 +35,8 @@ Item {
   // Set when the user picks a chip; "" follows `preferredBackend`.
   property string selectedId: ""
 
-  readonly property var backends: [proton, mullvad, windscribe, warp, amneziaWg, networkManager]
+  // The order of the chips, and of the setup hints: the first hint wins.
+  readonly property var backends: [proton, mullvad, windscribe, warp, networkManager, amneziaWg]
   // Tools this machine has. Hiding one is a statement about the widget, not
   // about the machine, so the settings view lists these — including the hidden
   // ones, which would otherwise be unreachable once they were switched off.
@@ -100,28 +101,16 @@ Item {
   // An installed tool with nothing to show hides itself, so the panel would
   // otherwise tell you to install what you already have. Optional: a backend
   // without the property simply has nothing to say.
-  readonly property string setupHint: {
-    for (var i = 0; i < backends.length; i++) {
-      if (isHidden(backends[i].backendId)) continue
-      var hint = backends[i].setupHint
-      if (hint !== undefined && String(hint) !== "") return String(hint)
-    }
-    return ""
-  }
-
-  // The command that resolves the hint above, from the same backend, so the
+  //
+  // `setupCommand` resolves that hint and comes from the same backend, so the
   // panel can run it when the hint is clicked. Empty when that backend has no
-  // command to offer; the hint is then text and nothing more.
-  readonly property string setupCommand: {
-    for (var i = 0; i < backends.length; i++) {
-      if (isHidden(backends[i].backendId)) continue
-      var hint = backends[i].setupHint
-      if (hint === undefined || String(hint) === "") continue
-      var command = backends[i].setupCommand
-      return command === undefined ? "" : String(command)
-    }
-    return ""
-  }
+  // command to offer; the hint is then text and nothing more. The properties are
+  // read here rather than inside Shared.pickSetup so the binding tracks them.
+  readonly property var _setup: Shared.pickSetup(backends.map(function(backend) {
+    return { id: backend.backendId, detected: backend.detected, hint: backend.setupHint, command: backend.setupCommand }
+  }), hiddenBackendIds)
+  readonly property string setupHint: _setup.hint
+  readonly property string setupCommand: _setup.command
 
   // ------------------------------------------------------------- public IP
 

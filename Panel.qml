@@ -86,10 +86,13 @@ Panel {
   // (a terms prompt, a sudo password), so a terminal owns it and the panel steps
   // aside. Reopening the panel re-probes every backend, which is what brings the
   // newly set-up tool in.
+  // Answers whether a terminal was actually asked for, so `setup` over IPC does
+  // not report a command it never ran.
   function runSetupCommand() {
-    if (!root.bar || vpn.setupCommand === "") return
+    if (!root.bar || vpn.setupCommand === "") return false
     root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(vpn.setupCommand))
     root.close()
+    return true
   }
 
   readonly property string statusLine: {
@@ -417,11 +420,13 @@ Panel {
     function status(): string { return vpn.barSummary }
     function ip(): string { return vpn.publicIp !== "" ? vpn.publicIp : "unknown" }
     // The command that clears the setup hint, run in a terminal as a click on
-    // the hint would. Answers "none" when nothing needs setting up.
+    // the hint would. Answers "none" when nothing needs setting up, and "no bar"
+    // when this instance has no bar to open a terminal from.
     function setup(): string {
       if (vpn.setupCommand === "") return "none"
-      root.runSetupCommand()
-      return vpn.setupCommand
+      var command = vpn.setupCommand
+      if (!root.runSetupCommand()) return "no bar"
+      return command
     }
     function backends(): string {
       return vpn.availableBackends.map(function(b) { return b.backendId }).join(" ")

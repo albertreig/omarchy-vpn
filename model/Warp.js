@@ -77,6 +77,13 @@ function warpNeedsTos(output) {
   return /accept the warp terms of service/i.test(String(output || ""))
 }
 
+// Whether a warp-cli call failed. The terms refusal exits 1 today; the line is
+// checked as well, so a release that printed it with exit 0 would still not be
+// read as an answer.
+function warpCommandFailed(exitCode, output) {
+  return exitCode !== 0 || warpNeedsTos(output)
+}
+
 // warp-cli could not reach warp-svc: the service is stopped or not installed.
 // These are warp-cli's own messages (2026.7), taken from the binary rather than
 // guessed, so an unrelated failure that mentions a socket is not mistaken for a
@@ -92,19 +99,34 @@ function warpDaemonUnreachable(output) {
 }
 
 // `warp-cli --json registration show` answers with the account when this
-// device is registered. `managed` is a Zero Trust enrolment, which a user may
-// not be allowed to disconnect.
+// device is registered.
 function parseWarpRegistration(raw) {
-  var result = { registered: false, accountType: "", managed: false }
+  var result = { registered: false, accountType: "" }
   var payload = warpJson(raw)
   if (!payload) return result
   if (!payload.id && !payload.device_id && !payload.account) return result
 
   result.registered = true
-  result.managed = payload.managed === true
   var account = payload.account
   if (account && typeof account === "object") result.accountType = String(account.type || "")
   return result
+}
+
+// What one `registration show` probe tells the backend: the two setup blockers
+// it can run into, and the registration to keep. Only a clean answer may change
+// the registration. A refused or failed probe after a good one keeps the device
+// listed, and with it the chip that is the only way to see why WARP stopped
+// answering.
+function warpProbeResult(exitCode, stdout, stderr, previous) {
+  var output = String(stdout || "") + "\n" + String(stderr || "")
+  var needsTos = warpNeedsTos(output)
+  var registration = previous || parseWarpRegistration("")
+  if (!warpCommandFailed(exitCode, output)) registration = parseWarpRegistration(stdout)
+  return {
+    needsTos: needsTos,
+    daemonDown: warpDaemonUnreachable(output),
+    registration: registration
+  }
 }
 
 function warpAccountLabel(type) {
@@ -230,33 +252,76 @@ function warpDetails(status, settings, stats, registration) {
   return rows.filter(function(row) { return row.value !== "" })
 }
 
+// The three things that stand between an installed warp-cli and a usable
+// tunnel, each with the command that clears it and how to say so: as the setup
+// hint while WARP is not listed, and as the error when a command runs into it.
+//
+// Every command needs a person at the keyboard: the terms prompt, and sudo's
+// password for starting the service. Registering is the one that needs no
+// answer, but it goes through the same terminal so its output — the new device
+// and account — is seen rather than discarded.
+var WARP_SETUP = {
+  terms: {
+    command: "warp-cli registration show",
+    hint: "Cloudflare WARP: accept its terms once by running warp-cli registration show in a terminal",
+    failure: "Accept the WARP terms once: run warp-cli registration show in a terminal"
+  },
+  service: {
+    command: "sudo systemctl enable --now warp-svc",
+    hint: "Cloudflare WARP: start its service with sudo systemctl enable --now warp-svc",
+    failure: "The WARP service is not responding. Start it with: sudo systemctl enable --now warp-svc"
+  },
+  registration: {
+    command: "warp-cli registration new",
+    hint: "Cloudflare WARP: register this device with warp-cli registration new",
+    failure: "This device is not registered. Run: warp-cli registration new"
+  }
+}
+
+// Which of WARP_SETUP keeps the backend from being `detected`, or "" when
+// nothing does. A registered device is detected, so it has nothing to set up
+// even while warp-svc is down: that is an error on its chip, not a hint, and the
+// contract's `setupCommand` must not offer `sudo systemctl` for a tool that is
+// already listed.
+function warpSetupState(probe) {
+  if (!probe || !probe.present) return ""
+  if (probe.registered) return ""
+  if (probe.needsTos) return "terms"
+  if (probe.daemonDown) return "service"
+  return "registration"
+}
+
 // Why the backend is not `detected`, in the words of what fixes it.
 function warpSetupHint(probe) {
-  if (!probe || !probe.present) return ""
-  if (probe.needsTos) return "Cloudflare WARP: accept its terms once by running warp-cli registration show in a terminal"
-  if (probe.daemonDown) return "Cloudflare WARP: start its service with sudo systemctl enable --now warp-svc"
-  if (!probe.registered) return "Cloudflare WARP: register this device with warp-cli registration new"
-  return ""
+  var state = warpSetupState(probe)
+  return state === "" ? "" : WARP_SETUP[state].hint
 }
 
 // The command that clears `warpSetupHint`, for the panel to run in a terminal
-// when the hint is clicked. Every case needs a person at the keyboard: the terms
-// prompt, and sudo's password for starting the service. Registering is the one
-// that needs no answer, but it goes through the same terminal so its output — the
-// new device and account — is seen rather than discarded.
+// when the hint is clicked.
 function warpSetupCommand(probe) {
-  if (!probe || !probe.present) return ""
-  if (probe.needsTos) return "warp-cli registration show"
-  if (probe.daemonDown) return "sudo systemctl enable --now warp-svc"
-  if (!probe.registered) return "warp-cli registration new"
+  var state = warpSetupState(probe)
+  return state === "" ? "" : WARP_SETUP[state].command
+}
+
+// The setup state a failed command's output names, or "".
+function warpFailureState(output) {
+  var text = String(output || "")
+  if (warpNeedsTos(text)) return "terms"
+  // warp-cli 2026.7.1377 says `Missing registration. Try running: "warp-cli
+  // registration new"`; the other two spellings are kept from before that was
+  // read out of its binary.
+  if (/missing registration|registration missing|not registered/i.test(text)) return "registration"
+  if (warpDaemonUnreachable(text)) return "service"
   return ""
 }
 
 function describeWarpFailure(output, fallback) {
   var text = String(output || "").trim()
-  if (warpNeedsTos(text)) return "Accept the WARP terms once: run warp-cli registration show in a terminal"
-  if (/registration missing|not registered/i.test(text)) return "This device is not registered. Run: warp-cli registration new"
-  if (warpDaemonUnreachable(text)) return "The WARP service is not responding. Start it with: sudo systemctl enable --now warp-svc"
-  if (/switch.*locked|not allowed/i.test(text)) return "Your organisation does not allow switching WARP from here"
+  var state = warpFailureState(text)
+  if (state !== "") return WARP_SETUP[state].failure
+  // No case for a Zero Trust `switch_locked` refusal: warp-cli 2026.7.1377 has
+  // no message of its own for it, and matching a guess such as "not allowed"
+  // would relabel unrelated errors. Its own words are shown instead.
   return Shared.elide(text || fallback, 140)
 }
