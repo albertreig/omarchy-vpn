@@ -4,10 +4,12 @@ import "model/Shared.js" as Shared
 import "model/NetworkManager.js" as NetworkManager
 
 // NetworkManager backend: every tunnel NetworkManager owns, which on a desktop
-// means OpenVPN, WireGuard, OpenConnect and VPNC. None has a session daemon of
-// its own to ask — NetworkManager is what imports and stores `.ovpn` files,
-// WireGuard configs and concentrator profiles alike. Implements the backend
-// contract documented in VpnController.qml.
+// means OpenVPN, WireGuard, OpenConnect, VPNC and Fortinet SSL VPN (the
+// networkmanager-fortisslvpn plugin, which drives openfortivpn underneath).
+// None has a session daemon of its own to ask — NetworkManager is what
+// imports and stores `.ovpn` files, WireGuard configs and concentrator
+// profiles alike. Implements the backend contract documented in
+// VpnController.qml.
 Item {
   id: root
   visible: false
@@ -17,10 +19,10 @@ Item {
 
   readonly property string backendId: "networkmanager"
   readonly property string label: "NetworkManager"
-  // Four names, because this backend is the only way to reach any of the
+  // Five names, because this backend is the only way to reach any of the
   // protocols and the label names the manager rather than anything you would
   // install.
-  readonly property var installNames: ["OpenVPN", "WireGuard", "OpenConnect", "VPNC"]
+  readonly property var installNames: ["OpenVPN", "WireGuard", "OpenConnect", "VPNC", "FortiSSL VPN"]
 
   // The helper that authenticates an OpenConnect profile. Resolved here
   // because only the backend knows where the plugin is installed.
@@ -41,11 +43,12 @@ Item {
   property bool _wireguardPresent: false
   property bool _openconnectPresent: false
   property bool _vpncPresent: false
+  property bool _fortisslvpnPresent: false
   property int _probesDone: 0
   property bool _probed: false
 
   readonly property bool _toolsPresent:
-    _nmcliPresent && (_openvpnPresent || _wireguardPresent || _openconnectPresent || _vpncPresent)
+    _nmcliPresent && (_openvpnPresent || _wireguardPresent || _openconnectPresent || _vpncPresent || _fortisslvpnPresent)
   // Having the tools is not having anything to connect to. NetworkManager is
   // the one backend whose list can be legitimately empty on a working install,
   // and a chip leading to an empty list is a chip worth not drawing.
@@ -92,7 +95,7 @@ Item {
   // probed this is nothing rather than five more processes every poll.
   function detect(force) {
     if (nmcliProbe.running || openvpnProbe.running || wireguardProbe.running
-        || openconnectProbe.running || vpncProbe.running) return
+        || openconnectProbe.running || vpncProbe.running || fortisslvpnProbe.running) return
     if (_probed && force !== true) return
     _probesDone = 0
     nmcliProbe.running = true
@@ -103,8 +106,9 @@ Item {
   }
 
   function _probeFinished() {
+    fortisslvpnProbe.running = true
     root._probesDone += 1
-    if (root._probesDone < 5) return
+    if (root._probesDone < 6) return
     root._probed = true
     if (root._toolsPresent) root.refresh()
   }
@@ -257,6 +261,7 @@ Item {
     onTriggered: {
       settleTimer.ticks += 1
       root.refresh()
+    if (profile.kind === "fortisslvpn") return _fortisslvpnPresent
       if (settleTimer.ticks >= 4) {
         settleTimer.ticks = 0
         settleTimer.running = false
@@ -379,6 +384,24 @@ Item {
       root.lastError = ""
       listProcess.pending = NetworkManager.parseNmcliConnections(String(listStdout.text || ""))
       if (listProcess.pending.length === 0) {
+  // networkmanager-fortisslvpn ships nm-fortisslvpn-service (which drives
+  // openfortivpn) off PATH, same as the VPNC plugin — so the carrier is
+  // checked directly rather than a command nobody invokes.
+  Process {
+    id: fortisslvpnProbe
+    command: ["sh", "-c", [
+      "test -x /usr/lib/nm-fortisslvpn-service",
+      "test -x /usr/libexec/nm-fortisslvpn-service",
+      "test -x /usr/lib/NetworkManager/nm-fortisslvpn-service",
+      "test -x /usr/lib/networkmanager/nm-fortisslvpn-service"
+    ].join(" || ")]
+    running: true
+    onExited: function(exitCode) {
+      root._fortisslvpnPresent = exitCode === 0
+      root._probeFinished()
+    }
+  }
+
         root.applyProfiles([])
         return
       }
@@ -494,6 +517,8 @@ Item {
         }
       } else {
         root.lastError = ""
+        } else if (NetworkManager.isFortiSslVpnService(detail.serviceType)) {
+          candidate.kind = "fortisslvpn"
       }
       root._pendingTarget = null
       root.actionStatus = ""

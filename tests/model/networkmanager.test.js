@@ -145,10 +145,11 @@ test("vpnDataValue matches the whole key, not a prefix", () => {
   eq(NetworkManager.vpnDataValue("", "gateway"), "")
 })
 
-test("nmKindLabel names all four kinds", () => {
+test("nmKindLabel names all five kinds", () => {
   eq(NetworkManager.nmKindLabel({ kind: "wireguard" }), "WireGuard")
   eq(NetworkManager.nmKindLabel({ kind: "openconnect" }), "OpenConnect")
   eq(NetworkManager.nmKindLabel({ kind: "vpnc" }), "VPNC")
+  eq(NetworkManager.nmKindLabel({ kind: "fortisslvpn" }), "FortiSSL")
   eq(NetworkManager.nmKindLabel({ kind: "vpn" }), "OpenVPN")
 })
 
@@ -245,6 +246,51 @@ test("nmDetails names a live VPNC tunnel and its gateway", () => {
     { name: "Campus", uuid: "uuid-vpnc", kind: "vpnc", active: true, gateway: "vpn.example.com" }
   ])
   eq(rows[1], Shared.detail("Type", "VPNC"))
+  eq(rows[2], Shared.detail("Gateway", "vpn.example.com"))
+})
+
+// ------------------------------------------------------------- FortiSSL VPN
+
+// Real shape from networkmanager-fortisslvpn (the plugin that drives
+// openfortivpn underneath). Its identity key is the bare `user`, unlike
+// OpenVPN's `username` or VPNC's `Xauth username` — see
+// shared/nm-service-defines.h in NetworkManager-fortisslvpn upstream.
+const FORTISSLVPN_DETAILS = [
+  "connection.uuid:uuid-forti",
+  "vpn.service-type:org.freedesktop.NetworkManager.fortisslvpn",
+  "vpn.data:gateway = vpn.example.com, password-flags = 1, user = alice",
+  ""
+].join("\n")
+
+test("isFortiSslVpnService tells FortiSSL from the other NetworkManager plugins", () => {
+  eq(NetworkManager.isFortiSslVpnService("org.freedesktop.NetworkManager.fortisslvpn"), true)
+  eq(NetworkManager.isFortiSslVpnService("org.freedesktop.NetworkManager.openvpn"), false)
+  eq(NetworkManager.isFortiSslVpnService("org.freedesktop.NetworkManager.vpnc"), false)
+  eq(NetworkManager.isFortiSslVpnService(""), false)
+})
+
+test("parseNmcliVpnDetails reads FortiSSL identity and gateway", () => {
+  const detail = NetworkManager.parseNmcliVpnDetails(FORTISSLVPN_DETAILS)["uuid-forti"]
+  eq(detail.hasUsername, true)
+  eq(detail.gateway, "vpn.example.com")
+})
+
+test("nmTargets presents FortiSSL as an ordinary NetworkManager profile", () => {
+  const targets = NetworkManager.nmTargets([
+    { name: "HQ", uuid: "uuid-forti", kind: "fortisslvpn", active: false, hasUsername: true, gateway: "vpn.example.com" }
+  ])
+  eq(targets[0].detail, "FortiSSL profile")
+  eq(targets[0].glyph, Shared.GLYPH_SHIELD_LOCK)
+  eq(targets[0].args, ["connection", "up", "uuid", "uuid-forti"])
+  eq(targets[0].command, undefined)
+  eq(NetworkManager.usernameSetting(targets[0]), "user")
+})
+
+test("nmDetails names a live FortiSSL tunnel and its gateway", () => {
+  const rows = NetworkManager.nmDetails([
+    { name: "HQ", uuid: "uuid-forti", kind: "fortisslvpn", active: true, gateway: "vpn.example.com" }
+  ])
+  eq(rows[1], Shared.detail("Type", "FortiSSL"))
   eq(rows[2], Shared.detail("Gateway", "vpn.example.com"))
 })
 

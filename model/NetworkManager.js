@@ -139,9 +139,10 @@ function vpnDataValue(data, wanted) {
 }
 
 // vpn.data is a comma-separated "key = value" list. OpenVPN calls the identity
-// `username`; VPNC calls it `Xauth username`. Both live outside vpn.secrets, so
-// `nmcli --ask` never prompts for either — a profile missing one authenticates
-// as the empty user and is rejected.
+// `username`; VPNC calls it `Xauth username`; Fortinet SSL VPN calls it plain
+// `user`. All three live outside vpn.secrets, so `nmcli --ask` never prompts
+// for any of them — a profile missing one authenticates as the empty user and
+// is rejected.
 function hasVpnUsername(data) {
   var entries = String(data || "").split(",")
   for (var i = 0; i < entries.length; i++) {
@@ -149,7 +150,7 @@ function hasVpnUsername(data) {
     var eq = entry.indexOf("=")
     if (eq === -1) continue
     var key = entry.substring(0, eq).trim().toLowerCase()
-    if (key !== "username" && key !== "xauth username") continue
+    if (key !== "username" && key !== "xauth username" && key !== "user") continue
 
     var value = entry.substring(eq + 1).trim()
     if (value !== "") return true
@@ -171,6 +172,13 @@ function isVpncService(serviceType) {
   return String(serviceType || "").toLowerCase().indexOf("networkmanager.vpnc") !== -1
 }
 
+// Fortinet SSL VPN, via the networkmanager-fortisslvpn plugin — the one that
+// drives openfortivpn underneath. Its own service, so it never collides with
+// the openvpn check above.
+function isFortiSslVpnService(serviceType) {
+  return String(serviceType || "").toLowerCase().indexOf("fortisslvpn") !== -1
+}
+
 function isWireGuard(profile) {
   return profile && profile.kind === "wireguard"
 }
@@ -181,6 +189,10 @@ function isOpenConnect(profile) {
 
 function isVpnc(profile) {
   return profile && profile.kind === "vpnc"
+}
+
+function isFortiSslVpn(profile) {
+  return profile && profile.kind === "fortisslvpn"
 }
 
 // NetworkManager's OpenVPN plugin records the auth mode in `connection-type`:
@@ -194,22 +206,25 @@ function isCertificateOnlyOpenVpn(profile) {
   return type === "tls" || type === "static-key"
 }
 
-// A username is an OpenVPN and VPNC concern. WireGuard keeps its keys in the
-// profile, and OpenConnect asks the gateway who you are as part of its own
-// authentication, so neither can be missing one.
+// A username is an OpenVPN, VPNC and Fortinet SSL VPN concern. WireGuard keeps
+// its keys in the profile, and OpenConnect asks the gateway who you are as
+// part of its own authentication, so neither can be missing one.
 function needsUsername(profile) {
   return !isWireGuard(profile) && !isOpenConnect(profile)
     && !isCertificateOnlyOpenVpn(profile)
 }
 
 function usernameSetting(profile) {
-  return isVpnc(profile) ? "Xauth username" : "username"
+  if (isVpnc(profile)) return "Xauth username"
+  if (isFortiSslVpn(profile)) return "user"
+  return "username"
 }
 
 function nmKindLabel(profile) {
   if (isWireGuard(profile)) return "WireGuard"
   if (isOpenConnect(profile)) return "OpenConnect"
   if (isVpnc(profile)) return "VPNC"
+  if (isFortiSslVpn(profile)) return "FortiSSL"
   return "OpenVPN"
 }
 
@@ -228,10 +243,11 @@ function nmTargets(profiles, authScript) {
     var wireguard = isWireGuard(profile)
     var openconnect = isOpenConnect(profile)
     var vpnc = isVpnc(profile)
+    var fortisslvpn = isFortiSslVpn(profile)
 
     var glyph = Shared.GLYPH_LOCK
     if (wireguard) glyph = Shared.GLYPH_SHIELD
-    else if (openconnect || vpnc) glyph = Shared.GLYPH_SHIELD_LOCK
+    else if (openconnect || vpnc || fortisslvpn) glyph = Shared.GLYPH_SHIELD_LOCK
 
     var target = {
       key: "profile:" + profile.uuid,
@@ -278,7 +294,7 @@ function nmDetails(profiles) {
     // Which gateway an interactive or concentrator-backed profile reached,
     // since an organisation commonly has several and the profile name rarely
     // says which one.
-    if ((isOpenConnect(profiles[i]) || isVpnc(profiles[i])) && profiles[i].gateway) {
+    if ((isOpenConnect(profiles[i]) || isVpnc(profiles[i]) || isFortiSslVpn(profiles[i])) && profiles[i].gateway) {
       rows.push(Shared.detail("Gateway", profiles[i].gateway))
     }
   }
