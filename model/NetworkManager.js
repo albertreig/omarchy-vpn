@@ -1,17 +1,18 @@
 .pragma library
 .import "Shared.js" as Shared
 
-// OpenVPN, WireGuard, OpenConnect and VPNC profiles, via `nmcli`. Parsing and
-// row-building only — the process plumbing lives in NetworkManagerBackend.qml.
+// OpenVPN, WireGuard, OpenConnect, VPNC and L2TP/IPsec profiles, via `nmcli`.
+// Parsing and row-building only — the process plumbing lives in
+// NetworkManagerBackend.qml.
 
 //
-// All four live here because on a desktop they are NetworkManager profiles:
+// All five live here because on a desktop they are NetworkManager profiles:
 // same listing call, same activation and teardown. What differs is how
-// NetworkManager types them — OpenVPN, OpenConnect and VPNC are `vpn`
+// NetworkManager types them — OpenVPN, OpenConnect, VPNC and L2TP are `vpn`
 // connections with a service-type plugin behind them, while WireGuard is its
 // own connection type with the keys in the profile.
 //
-// OpenConnect differs from the other three in one way that reaches this file: it
+// OpenConnect differs from the other four in one way that reaches this file: it
 // cannot be brought up with `connection up` alone. Its cookie/gateway/gwcert/
 // resolve secrets are all flagged not-saved, so every activation needs a
 // secret agent to produce them, and the answer is a helper that runs the
@@ -139,9 +140,9 @@ function vpnDataValue(data, wanted) {
 }
 
 // vpn.data is a comma-separated "key = value" list. OpenVPN calls the identity
-// `username`; VPNC calls it `Xauth username`. Both live outside vpn.secrets, so
-// `nmcli --ask` never prompts for either — a profile missing one authenticates
-// as the empty user and is rejected.
+// `username`; VPNC calls it `Xauth username`; L2TP calls it `user`. All three
+// live outside vpn.secrets, so `nmcli --ask` never prompts for any of them — a
+// profile missing one authenticates as the empty user and is rejected.
 function hasVpnUsername(data) {
   var entries = String(data || "").split(",")
   for (var i = 0; i < entries.length; i++) {
@@ -149,7 +150,7 @@ function hasVpnUsername(data) {
     var eq = entry.indexOf("=")
     if (eq === -1) continue
     var key = entry.substring(0, eq).trim().toLowerCase()
-    if (key !== "username" && key !== "xauth username") continue
+    if (key !== "username" && key !== "xauth username" && key !== "user") continue
 
     var value = entry.substring(eq + 1).trim()
     if (value !== "") return true
@@ -171,6 +172,10 @@ function isVpncService(serviceType) {
   return String(serviceType || "").toLowerCase().indexOf("networkmanager.vpnc") !== -1
 }
 
+function isL2tpService(serviceType) {
+  return String(serviceType || "").toLowerCase().indexOf("networkmanager.l2tp") !== -1
+}
+
 function isWireGuard(profile) {
   return profile && profile.kind === "wireguard"
 }
@@ -181,6 +186,10 @@ function isOpenConnect(profile) {
 
 function isVpnc(profile) {
   return profile && profile.kind === "vpnc"
+}
+
+function isL2tp(profile) {
+  return profile && profile.kind === "l2tp"
 }
 
 // NetworkManager's OpenVPN plugin records the auth mode in `connection-type`:
@@ -194,8 +203,8 @@ function isCertificateOnlyOpenVpn(profile) {
   return type === "tls" || type === "static-key"
 }
 
-// A username is an OpenVPN and VPNC concern. WireGuard keeps its keys in the
-// profile, and OpenConnect asks the gateway who you are as part of its own
+// A username is an OpenVPN, VPNC and L2TP concern. WireGuard keeps its keys in
+// the profile, and OpenConnect asks the gateway who you are as part of its own
 // authentication, so neither can be missing one.
 function needsUsername(profile) {
   return !isWireGuard(profile) && !isOpenConnect(profile)
@@ -203,13 +212,16 @@ function needsUsername(profile) {
 }
 
 function usernameSetting(profile) {
-  return isVpnc(profile) ? "Xauth username" : "username"
+  if (isVpnc(profile)) return "Xauth username"
+  if (isL2tp(profile)) return "user"
+  return "username"
 }
 
 function nmKindLabel(profile) {
   if (isWireGuard(profile)) return "WireGuard"
   if (isOpenConnect(profile)) return "OpenConnect"
   if (isVpnc(profile)) return "VPNC"
+  if (isL2tp(profile)) return "L2TP"
   return "OpenVPN"
 }
 
@@ -228,19 +240,20 @@ function nmTargets(profiles, authScript) {
     var wireguard = isWireGuard(profile)
     var openconnect = isOpenConnect(profile)
     var vpnc = isVpnc(profile)
+    var l2tp = isL2tp(profile)
 
     var glyph = Shared.GLYPH_LOCK
     if (wireguard) glyph = Shared.GLYPH_SHIELD
-    else if (openconnect || vpnc) glyph = Shared.GLYPH_SHIELD_LOCK
+    else if (openconnect || vpnc || l2tp) glyph = Shared.GLYPH_SHIELD_LOCK
 
     var target = {
       key: "profile:" + profile.uuid,
       label: profile.name,
       detail: profile.active
         ? "Connected"
-        // OpenVPN and VPNC keep identity outside their secrets. WireGuard keeps
-        // its keys in the profile, and OpenConnect settles identity with the
-        // gateway, so neither has anything for the user to have left out.
+        // OpenVPN, VPNC and L2TP keep identity outside their secrets. WireGuard
+        // keeps its keys in the profile, and OpenConnect settles identity with
+        // the gateway, so neither has anything for the user to have left out.
         : (!needsUsername(profile) || profile.hasUsername
             ? nmKindLabel(profile) + " profile"
             : "No username set"),
@@ -262,6 +275,40 @@ function nmTargets(profiles, authScript) {
   return targets
 }
 
+// Each plugin has its own way in, and naming one that is not installed sends
+// people after a package they do not need — the line named OpenVPN and
+// WireGuard whatever was actually installed. OpenVPN and WireGuard import the
+// file someone is handed; an IPsec gateway arrives as a set of values in an
+// email rather than a file, so those profiles are built field by field. The
+// key names are the ones NetworkManager itself stores, which is why they are
+// spelled inconsistently.
+function nmEmptyText(tools) {
+  var available = tools || {}
+  var ways = []
+
+  if (available.openvpn) {
+    ways.push("nmcli connection import type openvpn file <config.ovpn>")
+  }
+  if (available.wireguard) {
+    ways.push("nmcli connection import type wireguard file <config.conf>")
+  }
+  if (available.openconnect) {
+    ways.push("nmcli connection add type vpn vpn-type openconnect con-name <name>"
+      + " -- vpn.data \"gateway = <host>\"")
+  }
+  if (available.vpnc) {
+    ways.push("nmcli connection add type vpn vpn-type vpnc con-name <name>"
+      + " -- vpn.data \"IPSec gateway = <host>, IPSec ID = <group>, Xauth username = <you>\"")
+  }
+  if (available.l2tp) {
+    ways.push("nmcli connection add type vpn vpn-type l2tp con-name <name>"
+      + " -- vpn.data \"gateway = <host>, user = <you>, ipsec-enabled = yes\"")
+  }
+
+  if (ways.length === 0) return "No profiles yet."
+  return "No profiles yet. Create one with: " + ways.join(" — or: ")
+}
+
 function nmSummary(profiles) {
   for (var i = 0; i < profiles.length; i++) {
     if (profiles[i].active) return profiles[i].name
@@ -278,7 +325,8 @@ function nmDetails(profiles) {
     // Which gateway an interactive or concentrator-backed profile reached,
     // since an organisation commonly has several and the profile name rarely
     // says which one.
-    if ((isOpenConnect(profiles[i]) || isVpnc(profiles[i])) && profiles[i].gateway) {
+    if ((isOpenConnect(profiles[i]) || isVpnc(profiles[i]) || isL2tp(profiles[i]))
+        && profiles[i].gateway) {
       rows.push(Shared.detail("Gateway", profiles[i].gateway))
     }
   }

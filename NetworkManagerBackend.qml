@@ -4,10 +4,10 @@ import "model/Shared.js" as Shared
 import "model/NetworkManager.js" as NetworkManager
 
 // NetworkManager backend: every tunnel NetworkManager owns, which on a desktop
-// means OpenVPN, WireGuard, OpenConnect and VPNC. None has a session daemon of
-// its own to ask — NetworkManager is what imports and stores `.ovpn` files,
-// WireGuard configs and concentrator profiles alike. Implements the backend
-// contract documented in VpnController.qml.
+// means OpenVPN, WireGuard, OpenConnect, VPNC and L2TP/IPsec. None has a
+// session daemon of its own to ask — NetworkManager is what imports and stores
+// `.ovpn` files, WireGuard configs and concentrator profiles alike. Implements
+// the backend contract documented in VpnController.qml.
 Item {
   id: root
   visible: false
@@ -17,10 +17,11 @@ Item {
 
   readonly property string backendId: "networkmanager"
   readonly property string label: "NetworkManager"
-  // Four names, because this backend is the only way to reach any of the
+  // Five names, because this backend is the only way to reach any of the
   // protocols and the label names the manager rather than anything you would
-  // install.
-  readonly property var installNames: ["OpenVPN", "WireGuard", "OpenConnect", "VPNC"]
+  // install. One per probe below: a name here that nothing probes for would
+  // offer a user a tool the backend then refuses to run profiles of.
+  readonly property var installNames: ["OpenVPN", "WireGuard", "OpenConnect", "VPNC", "L2TP"]
 
   // The helper that authenticates an OpenConnect profile. Resolved here
   // because only the backend knows where the plugin is installed.
@@ -41,11 +42,13 @@ Item {
   property bool _wireguardPresent: false
   property bool _openconnectPresent: false
   property bool _vpncPresent: false
+  property bool _l2tpPresent: false
   property int _probesDone: 0
   property bool _probed: false
 
   readonly property bool _toolsPresent:
-    _nmcliPresent && (_openvpnPresent || _wireguardPresent || _openconnectPresent || _vpncPresent)
+    _nmcliPresent && (_openvpnPresent || _wireguardPresent || _openconnectPresent
+      || _vpncPresent || _l2tpPresent)
   // Having the tools is not having anything to connect to. NetworkManager is
   // the one backend whose list can be legitimately empty on a working install,
   // and a chip leading to an empty list is a chip worth not drawing.
@@ -73,7 +76,13 @@ Item {
   readonly property string summary: NetworkManager.nmSummary(profiles)
   readonly property var details: NetworkManager.nmDetails(profiles)
   readonly property var targets: NetworkManager.nmTargets(profiles, root.openconnectAuth)
-  readonly property string emptyText: "No profiles yet. Import one with: nmcli connection import type openvpn file <config.ovpn> — or type wireguard file <config.conf>"
+  readonly property string emptyText: NetworkManager.nmEmptyText({
+    "openvpn": _openvpnPresent,
+    "wireguard": _wireguardPresent,
+    "openconnect": _openconnectPresent,
+    "vpnc": _vpncPresent,
+    "l2tp": _l2tpPresent
+  })
   readonly property string currentKey: {
     var profile = NetworkManager.activeNmProfile(profiles)
     return profile ? "profile:" + profile.uuid : ""
@@ -89,10 +98,10 @@ Item {
   // the discovery that would settle that question belongs in refresh(), which
   // the controller skips for a hidden tool. Falling through to it here would
   // poll a tool the user switched off. The binaries do not come and go, so once
-  // probed this is nothing rather than five more processes every poll.
+  // probed this is nothing rather than six more processes every poll.
   function detect(force) {
     if (nmcliProbe.running || openvpnProbe.running || wireguardProbe.running
-        || openconnectProbe.running || vpncProbe.running) return
+        || openconnectProbe.running || vpncProbe.running || l2tpProbe.running) return
     if (_probed && force !== true) return
     _probesDone = 0
     nmcliProbe.running = true
@@ -100,11 +109,12 @@ Item {
     wireguardProbe.running = true
     openconnectProbe.running = true
     vpncProbe.running = true
+    l2tpProbe.running = true
   }
 
   function _probeFinished() {
     root._probesDone += 1
-    if (root._probesDone < 5) return
+    if (root._probesDone < 6) return
     root._probed = true
     if (root._toolsPresent) root.refresh()
   }
@@ -218,6 +228,7 @@ Item {
     if (profile.kind === "wireguard") return _wireguardPresent
     if (profile.kind === "openconnect") return _openconnectPresent
     if (profile.kind === "vpnc") return _vpncPresent
+    if (profile.kind === "l2tp") return _l2tpPresent
     return _openvpnPresent
   }
 
@@ -327,6 +338,24 @@ Item {
     running: true
     onExited: function(exitCode) {
       root._vpncPresent = exitCode === 0
+      root._probeFinished()
+    }
+  }
+
+  // Same reasoning as VPNC: the L2TP carrier is the NetworkManager service, not
+  // the xl2tpd and pppd binaries it drives, and distributions disagree on where
+  // it lands.
+  Process {
+    id: l2tpProbe
+    command: ["sh", "-c", [
+      "test -x /usr/lib/nm-l2tp-service",
+      "test -x /usr/libexec/nm-l2tp-service",
+      "test -x /usr/lib/NetworkManager/nm-l2tp-service",
+      "test -x /usr/lib/networkmanager/nm-l2tp-service"
+    ].join(" || ")]
+    running: true
+    onExited: function(exitCode) {
+      root._l2tpPresent = exitCode === 0
       root._probeFinished()
     }
   }
@@ -446,6 +475,8 @@ Item {
           candidate.kind = "openconnect"
         } else if (NetworkManager.isVpncService(detail.serviceType)) {
           candidate.kind = "vpnc"
+        } else if (NetworkManager.isL2tpService(detail.serviceType)) {
+          candidate.kind = "l2tp"
         } else if (!NetworkManager.isOpenVpnService(detail.serviceType)) {
           continue
         }

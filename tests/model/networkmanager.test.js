@@ -1,5 +1,5 @@
-// OpenVPN, WireGuard, OpenConnect and VPNC profiles: how `nmcli` formats what
-// it prints, and which rows survive the filtering.
+// OpenVPN, WireGuard, OpenConnect, VPNC and L2TP profiles: how `nmcli` formats
+// what it prints, and which rows survive the filtering.
 const { test, eq, Shared, NetworkManager } = require("../harness.js")
 
 test("splitNmcliLine splits on the first unescaped colon", () => {
@@ -145,10 +145,11 @@ test("vpnDataValue matches the whole key, not a prefix", () => {
   eq(NetworkManager.vpnDataValue("", "gateway"), "")
 })
 
-test("nmKindLabel names all four kinds", () => {
+test("nmKindLabel names all five kinds", () => {
   eq(NetworkManager.nmKindLabel({ kind: "wireguard" }), "WireGuard")
   eq(NetworkManager.nmKindLabel({ kind: "openconnect" }), "OpenConnect")
   eq(NetworkManager.nmKindLabel({ kind: "vpnc" }), "VPNC")
+  eq(NetworkManager.nmKindLabel({ kind: "l2tp" }), "L2TP")
   eq(NetworkManager.nmKindLabel({ kind: "vpn" }), "OpenVPN")
 })
 
@@ -246,6 +247,91 @@ test("nmDetails names a live VPNC tunnel and its gateway", () => {
   ])
   eq(rows[1], Shared.detail("Type", "VPNC"))
   eq(rows[2], Shared.detail("Gateway", "vpn.example.com"))
+})
+
+// Taken from a working NetworkManager-l2tp profile against an L2TP/IPsec
+// gateway. The identity key is `user`, not OpenVPN's `username` or VPNC's
+// `Xauth username`, and a profile whose username goes unrecognised is reported
+// as having none and refused before it is ever dialled.
+const L2TP_DETAILS = [
+  "connection.uuid:uuid-l2tp",
+  "vpn.service-type:org.freedesktop.NetworkManager.l2tp",
+  "vpn.data:gateway = 203.0.113.10, ipsec-enabled = yes, ipsec-psk-flags = 0, password-flags = 0, user = alice",
+  ""
+].join("\n")
+
+test("isL2tpService tells L2TP from the other NetworkManager plugins", () => {
+  eq(NetworkManager.isL2tpService("org.freedesktop.NetworkManager.l2tp"), true)
+  eq(NetworkManager.isL2tpService("org.freedesktop.NetworkManager.openvpn"), false)
+  eq(NetworkManager.isL2tpService("org.freedesktop.NetworkManager.vpnc"), false)
+  eq(NetworkManager.isL2tpService(""), false)
+})
+
+test("parseNmcliVpnDetails reads the L2TP `user` key as an identity", () => {
+  const detail = NetworkManager.parseNmcliVpnDetails(L2TP_DETAILS)["uuid-l2tp"]
+  eq(detail.serviceType, "org.freedesktop.NetworkManager.l2tp")
+  eq(detail.hasUsername, true)
+  eq(detail.gateway, "203.0.113.10")
+})
+
+test("an L2TP profile with no user is reported as missing one", () => {
+  const raw = [
+    "connection.uuid:uuid-bare",
+    "vpn.service-type:org.freedesktop.NetworkManager.l2tp",
+    "vpn.data:gateway = 203.0.113.10, ipsec-enabled = yes",
+    ""
+  ].join("\n")
+  eq(NetworkManager.parseNmcliVpnDetails(raw)["uuid-bare"].hasUsername, false)
+})
+
+test("nmTargets presents L2TP as an ordinary NetworkManager profile", () => {
+  const targets = NetworkManager.nmTargets([
+    { name: "Datacenter", uuid: "uuid-l2tp", kind: "l2tp", active: false, hasUsername: true, gateway: "203.0.113.10" }
+  ])
+  eq(targets[0].detail, "L2TP profile")
+  eq(targets[0].glyph, Shared.GLYPH_SHIELD_LOCK)
+  eq(targets[0].args, ["connection", "up", "uuid", "uuid-l2tp"])
+  eq(targets[0].command, undefined)
+  eq(NetworkManager.usernameSetting(targets[0]), "user")
+})
+
+test("nmDetails names a live L2TP tunnel and its gateway", () => {
+  const rows = NetworkManager.nmDetails([
+    { name: "Datacenter", uuid: "uuid-l2tp", kind: "l2tp", active: true, gateway: "203.0.113.10" }
+  ])
+  eq(rows[1], Shared.detail("Type", "L2TP"))
+  eq(rows[2], Shared.detail("Gateway", "203.0.113.10"))
+})
+
+test("nmEmptyText names only the tools that are installed", () => {
+  eq(NetworkManager.nmEmptyText({ openvpn: true, wireguard: true }),
+    "No profiles yet. Create one with: nmcli connection import type openvpn file <config.ovpn>"
+    + " — or: nmcli connection import type wireguard file <config.conf>")
+
+  // The line used to name OpenVPN and WireGuard on a machine that had neither.
+  eq(NetworkManager.nmEmptyText({ l2tp: true }).indexOf("openvpn"), -1)
+  eq(NetworkManager.nmEmptyText({ l2tp: true }).indexOf("wireguard"), -1)
+})
+
+test("nmEmptyText builds rather than imports for the IPsec kinds", () => {
+  // L2TP's importer only takes .cnf, which is not what a gateway is handed out
+  // as, so the hint has to name every field the profile cannot do without.
+  const l2tp = NetworkManager.nmEmptyText({ l2tp: true })
+  eq(l2tp.indexOf("vpn-type l2tp") !== -1, true)
+  eq(l2tp.indexOf("gateway = <host>") !== -1, true)
+  eq(l2tp.indexOf("user = <you>") !== -1, true)
+  eq(l2tp.indexOf("ipsec-enabled = yes") !== -1, true)
+
+  // VPNC keeps vpnc.conf's spelling, which is why these are not `gateway` and
+  // `username` like everywhere else.
+  const vpnc = NetworkManager.nmEmptyText({ vpnc: true })
+  eq(vpnc.indexOf("IPSec gateway = <host>") !== -1, true)
+  eq(vpnc.indexOf("Xauth username = <you>") !== -1, true)
+})
+
+test("nmEmptyText says nothing it cannot back up", () => {
+  eq(NetworkManager.nmEmptyText({}), "No profiles yet.")
+  eq(NetworkManager.nmEmptyText(), "No profiles yet.")
 })
 
 test("nmSummary tells no profiles from none connected", () => {

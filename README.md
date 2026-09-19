@@ -4,10 +4,11 @@ A VPN widget for the Omarchy bar. One icon shows whether you are behind a
 tunnel; one panel connects, disconnects, and switches between the VPN tools you
 actually have installed.
 
-It supports **Proton VPN**, **Mullvad**, **Windscribe**, **Cloudflare WARP**, **AmneziaWG**, and the **OpenVPN**,
-**OpenConnect** and **WireGuard** profiles NetworkManager holds. Only the tools
-that have something to offer appear — install none and the widget tells you so;
-have several and a chip row lets you switch between them.
+It supports **Proton VPN**, **Mullvad**, **Windscribe**, **Cloudflare WARP**,
+**AmneziaWG**, and the **OpenVPN**, **WireGuard**, **OpenConnect**, **VPNC** and
+**L2TP/IPsec** profiles NetworkManager holds. Only the tools that have something
+to offer appear — install none and the widget tells you so; have several and a
+chip row lets you switch between them.
 
 <img src="preview.png" alt="The VPN panel open in the Omarchy bar, showing a Proton VPN connection to Zurich and a country list" width="365">
 
@@ -96,9 +97,10 @@ Omarchy with its Quickshell desktop, plus at least one of:
   terminal.
 - **AmneziaWG** — `awg` and `awg-quick` from `amneziawg-tools`, with at least
   one `.conf` profile in `~/.config/omarchy/vpn/awg-profiles/`.
-- **OpenVPN, WireGuard, OpenConnect or VPNC** — `nmcli`, plus `openvpn`, `wg`
-  (wireguard-tools), `networkmanager-openconnect`, or `networkmanager-vpnc`,
-  with at least one profile imported into NetworkManager.
+- **OpenVPN, WireGuard, OpenConnect, VPNC or L2TP/IPsec** — `nmcli`, plus
+  `openvpn`, `wg` (wireguard-tools), `networkmanager-openconnect`,
+  `networkmanager-vpnc`, or `networkmanager-l2tp`, with at least one profile
+  imported into NetworkManager.
 
 ## Settings
 
@@ -234,9 +236,9 @@ hooks or run a profile you trust directly from a terminal instead.
 
 <img src="preview-networkmanager.png" alt="The VPN panel on the NetworkManager chip, listing two OpenVPN profiles and one WireGuard profile" width="365">
 
-OpenVPN, WireGuard, OpenConnect and VPNC profiles all come from NetworkManager —
-the thing that imports and stores tunnel configs on a desktop. They share one
-chip, and the row icon says which is which. Import one with:
+OpenVPN, WireGuard, OpenConnect, VPNC and L2TP/IPsec profiles all come from
+NetworkManager — the thing that imports and stores tunnel configs on a desktop.
+They share one chip, and the row icon says which is which. Import one with:
 
 ```bash
 nmcli connection import type openvpn file ~/Downloads/office.ovpn
@@ -246,9 +248,10 @@ nmcli connection import type wireguard file ~/Downloads/home.conf
 NetworkManager runs on every desktop, so the chip appears only once you have a
 profile it can actually carry — an OpenVPN one with `openvpn` installed, a
 WireGuard one with `wireguard-tools`, an OpenConnect one with
-`networkmanager-openconnect`, or a VPNC one with `networkmanager-vpnc`. Until
-then the panel shows the import command above rather than a chip leading to an
-empty list.
+`networkmanager-openconnect`, a VPNC one with `networkmanager-vpnc`, or an
+L2TP/IPsec one with `networkmanager-l2tp`. Until then the panel names the tools
+you do have and how to create a profile for them, rather than showing a chip
+that leads to an empty list.
 
 A tunnel you started some other way is not listed: a bare `openvpn` process,
 `openvpn-client@.service`, or a `wg-quick@` unit. Neither is a tunnel another
@@ -286,6 +289,16 @@ VPNC profiles follow the OpenVPN credential path, but call their identity
 `Xauth username` and carry both a user password and an IPSec group secret. Save
 both secrets in the NetworkManager profile for a one-click connection; if the
 user password is not saved, the panel opens `nmcli --ask` in a terminal.
+
+L2TP/IPsec profiles work the same way, calling their identity `user` and
+carrying a user password alongside the IPsec pre-shared key. An L2TP gateway is
+usually handed out as a server, a username and a PSK rather than as a file, so
+the profile is built field by field instead of imported:
+
+```bash
+nmcli connection add type vpn vpn-type l2tp con-name office \
+  -- vpn.data "gateway = vpn.example.com, user = you, ipsec-enabled = yes"
+```
 
 If you are importing a Proton `.ovpn`: the username and password are the
 **OpenVPN/IKEv2** credentials from your Proton dashboard, not your Proton
