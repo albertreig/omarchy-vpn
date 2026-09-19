@@ -201,16 +201,23 @@ WARP's own Always On, so it stays off until you connect it again.
 
 AmneziaWG profiles are regular `awg-quick` configuration files. Put exported
 `.conf` files in `~/.config/omarchy/vpn/awg-profiles/`; the directory is created
-automatically when the widget first checks for profiles. Each file becomes a
-row on the AmneziaWG chip, named after its filename — for example,
+automatically when the widget first checks for profiles, and the
+**AmneziaWG profile directory** setting points it somewhere else. Each file
+becomes a row on the AmneziaWG chip, named after its filename — for example,
 `home.conf` appears as **home**.
+
+`awg-quick`'s own directory, `/etc/amnezia/amneziawg/`, is read too where its
+files are readable to you; they are normally root-only, so a tunnel started with
+`sudo awg-quick up work` instead shows up as a row while it is running, marked
+as started outside the widget. Its rows exist so you can take it down from the
+panel — there is nothing to reconnect to once it is off.
 
 Profiles normally contain a private key. The widget creates the directory with
 owner-only access (`0700`), but does not change an existing profile's mode; keep
 each `.conf` readable only by your user, for example with `chmod 600 *.conf`.
 
-The chip appears only when `awg` is installed and that directory contains at
-least one readable profile. Selecting a profile brings it up with `awg-quick`;
+The chip appears only when `awg` and `awg-quick` are both installed and there is
+at least one profile to show. Selecting a profile brings it up with `awg-quick`;
 selecting another takes the first one down before bringing the new one up, so
 the widget does not leave two AmneziaWG tunnels running.
 
