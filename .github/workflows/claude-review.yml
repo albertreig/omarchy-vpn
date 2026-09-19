@@ -1,8 +1,20 @@
 name: claude review
 
+# `pull_request_target`, not `pull_request`: a pull request from a fork gets no
+# repository secrets under `pull_request`, so outside contributions, the ones
+# that most need a read against the contract, were skipped. This event runs
+# with secrets, which is safe only because of how the job below is built:
+#
+# - The workflow file comes from the repository, never from the pull request,
+#   so a pull request cannot rewrite what this job is allowed to do.
+# - Nothing executes the pull request's code. The action checks the head out
+#   itself and restores `.claude/`, `CLAUDE.md`, `.mcp.json` and the other files
+#   the CLI reads at startup from the base branch, so a fork cannot plant hooks
+#   or settings. The tool allowlist below can read files and talk to the pull
+#   request, nothing more.
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review]
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # Read the code, write the review. Nothing here pushes commits — the action is
 # given no write tools, so the worst it can do to a branch is talk about it.
@@ -12,17 +24,22 @@ permissions:
 
 jobs:
   review:
-    # Two guards, both of which are "the run would fail anyway":
+    # Two guards:
     #
-    # A pull request from a fork gets no access to repository secrets, so the
-    # token below would be empty and the action would exit on authentication.
-    # Skipping is quieter than a red X on every outside contribution.
+    # Release pull requests carry nothing to review. Release-please's version
+    # bump only touches `CHANGELOG.md` and `manifest.json`, and the dev -> main
+    # promotion is code every earlier pull request already reviewed. The
+    # release-please one is also rewritten on every push to dev, so it would
+    # otherwise re-run the review each time.
     #
     # A draft is by definition not finished, and re-reviewing on every push to
     # one burns tokens on code the author is still moving around. Marking it
     # ready for review fires `ready_for_review` and the review happens then.
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
+      !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
+      !(github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'dev' &&
+        github.event.pull_request.head.repo.full_name == github.repository) &&
       github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
@@ -43,13 +60,22 @@ jobs:
           # `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}` to bill the
           # API instead; the action takes either, and nothing else changes.
           #
-          # Deliberately not the conventional `CLAUDE_CODE_OAUTH_TOKEN`. A pull
-          # request runs the workflow file from its own head, so one that
-          # restored an older revision of this file would resurrect whatever
-          # that revision allowed. Under a name no earlier revision ever
-          # referenced, such a run authenticates against nothing and dies before
-          # it reaches a tool.
+          # Deliberately not the conventional `CLAUDE_CODE_OAUTH_TOKEN`. Under
+          # the old `pull_request` trigger a pull request ran the workflow file
+          # from its own head, so one that restored an older revision of this
+          # file could resurrect whatever that revision allowed. Under a name no
+          # earlier revision ever referenced, such a run authenticates against
+          # nothing. `pull_request_target` closes that hole; the name stays so
+          # it never has to be reopened.
           claude_code_oauth_token: ${{ secrets.CLAUDE_REVIEW_TOKEN }}
+          # The action refuses to run for anyone without write access to the
+          # repository, which is every outside contributor, so without this the
+          # fork pull requests the trigger now lets in would fail instead of
+          # being reviewed. Setting it also makes the action scrub secrets from
+          # the environment of any subprocess it starts. What an injected prompt
+          # in a pull request could still do is bounded by `permissions` and the
+          # tool allowlist: post comments.
+          allowed_non_write_users: "*"
           # Posts a checklist comment while it works and edits it when done,
           # so a run that dies halfway is visible rather than silent.
           track_progress: true
