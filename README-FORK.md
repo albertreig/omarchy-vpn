@@ -16,13 +16,24 @@ omarchy plugin remove jkoestinger.vpn
 omarchy plugin add https://github.com/albertreig/omarchy-vpn.git --enable
 ```
 
-## Requisitos para FortiSSL
+## Requisitos
+
+Todo lo siguiente ya viene con Omarchy salvo el plugin de FortiSSL:
+
+- Omarchy con su shell (Quickshell) y `nmcli` (paquete `networkmanager`).
+- `git` para que `omarchy plugin add` clone el repo.
+
+Solo para FortiSSL:
 
 ```bash
-omarchy pkg aur add networkmanager-fortisslvpn   # trae openfortivpn
+omarchy pkg aur add networkmanager-fortisslvpn
 ```
 
-El plugin solo detecta el perfil si existe `nm-fortisslvpn-service` (en `/usr/lib/NetworkManager/`).
+Sus dependencias (`openfortivpn`, `ppp`, `libnm`, `libsecret`) se instalan solas, no hace falta pedirlas aparte. El plugin solo detecta el perfil si existe `nm-fortisslvpn-service` (en `/usr/lib/NetworkManager/`).
+
+Opcional, para crear el perfil con interfaz gráfica en vez de `nmcli`: `omarchy pkg add nm-connection-editor libnma-gtk4`. Con la GUI la contraseña también hay que dejarla guardada en el perfil (ver más abajo).
+
+Solo para desarrollar: `node` (para `node tests/run.js`) y `qmllint` (opcional).
 
 ## Crear el perfil VPN
 
