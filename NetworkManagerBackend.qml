@@ -62,6 +62,9 @@ Item {
   // Connecting can take two commands — down the profile that is up, then up the
   // one that was asked for. "" when nothing is in flight.
   property string _stage: ""
+  // The profile a "cancel" is bringing down, once connectProcess's kill has
+  // actually exited. Set only while _stage === "cancel".
+  property string _cancelUuid: ""
 
   // NetworkManager refuses to activate a profile whose secrets it does not
   // hold, and the Omarchy shell runs no NM secret agent to prompt with. The
@@ -103,10 +106,10 @@ Item {
     wireguardProbe.running = true
     openconnectProbe.running = true
     vpncProbe.running = true
+    fortisslvpnProbe.running = true
   }
 
   function _probeFinished() {
-    fortisslvpnProbe.running = true
     root._probesDone += 1
     if (root._probesDone < 6) return
     root._probed = true
@@ -191,16 +194,52 @@ Item {
   }
 
   function disconnect() {
-    if (!detected || _working) return
-
+    if (!detected) return
     var active = NetworkManager.activeNmProfile(profiles)
-    if (!active) return
 
+    // A profile can sit in nmcli's `connection up` for a long time — secrets
+    // negotiation, then the gateway itself — with nothing to show for it yet.
+    // Killing connectProcess only stops the client blocked on that call; NM's
+    // own activation of the profile carries on regardless, so it still needs
+    // an explicit `connection down` once the kill has actually landed.
+    if (connectProcess.running) {
+      var uuid = active ? active.uuid : (_pendingTarget ? _pendingTarget.uuid : "")
+      if (!uuid) return
+      _cancelUuid = uuid
+      _stage = "cancel"
+      lastError = ""
+      connectProcess.running = false
+      return
+    }
+
+    if (_working || !active) return
     _desired = 0
     _stage = "final"
     lastError = ""
     actionStatus = "Disconnecting…"
     connectProcess.command = ["nmcli", "connection", "down", "uuid", active.uuid]
+    connectProcess.running = true
+  }
+
+  // The down command that a cancelled connect still owes NM. Run from a timer
+  // rather than straight out of connectProcess's own onExited, for the same
+  // reentrancy reason the handover's second command waits for chainTimer.
+  function runCancelDown() {
+    var uuid = root._cancelUuid
+    root._cancelUuid = ""
+    root._pendingTarget = null
+    root._desired = 0
+
+    if (!uuid) {
+      root._stage = ""
+      root.actionStatus = ""
+      root.refresh()
+      return
+    }
+
+    root._stage = "final"
+    root.actionStatus = "Disconnecting…"
+    connectProcess.command = ["nmcli", "connection", "down", "uuid", uuid]
     connectProcess.running = true
   }
 
@@ -222,6 +261,7 @@ Item {
     if (profile.kind === "wireguard") return _wireguardPresent
     if (profile.kind === "openconnect") return _openconnectPresent
     if (profile.kind === "vpnc") return _vpncPresent
+    if (profile.kind === "fortisslvpn") return _fortisslvpnPresent
     return _openvpnPresent
   }
 
@@ -251,6 +291,15 @@ Item {
     onTriggered: root.connectPending()
   }
 
+  // Same reentrancy reason as chainTimer, for the down command a cancelled
+  // connect still owes NM once the kill that cancelled it has exited.
+  Timer {
+    id: cancelTimer
+    interval: 0
+    repeat: false
+    onTriggered: root.runCancelDown()
+  }
+
   // NetworkManager reports the new state a beat after nmcli returns.
   Timer {
     id: settleTimer
@@ -261,7 +310,6 @@ Item {
     onTriggered: {
       settleTimer.ticks += 1
       root.refresh()
-    if (profile.kind === "fortisslvpn") return _fortisslvpnPresent
       if (settleTimer.ticks >= 4) {
         settleTimer.ticks = 0
         settleTimer.running = false
@@ -336,6 +384,24 @@ Item {
     }
   }
 
+  // networkmanager-fortisslvpn ships nm-fortisslvpn-service (which drives
+  // openfortivpn) off PATH, same as the VPNC plugin — so the carrier is
+  // checked directly rather than a command nobody invokes.
+  Process {
+    id: fortisslvpnProbe
+    command: ["sh", "-c", [
+      "test -x /usr/lib/nm-fortisslvpn-service",
+      "test -x /usr/libexec/nm-fortisslvpn-service",
+      "test -x /usr/lib/NetworkManager/nm-fortisslvpn-service",
+      "test -x /usr/lib/networkmanager/nm-fortisslvpn-service"
+    ].join(" || ")]
+    running: true
+    onExited: function(exitCode) {
+      root._fortisslvpnPresent = exitCode === 0
+      root._probeFinished()
+    }
+  }
+
   // nmcli rejects the whole call when asked for a field it does not know, so an
   // nmcli too old for FILENAME does not return rows without it — it returns
   // nothing at all, and the backend would silently never appear. The first
@@ -384,24 +450,6 @@ Item {
       root.lastError = ""
       listProcess.pending = NetworkManager.parseNmcliConnections(String(listStdout.text || ""))
       if (listProcess.pending.length === 0) {
-  // networkmanager-fortisslvpn ships nm-fortisslvpn-service (which drives
-  // openfortivpn) off PATH, same as the VPNC plugin — so the carrier is
-  // checked directly rather than a command nobody invokes.
-  Process {
-    id: fortisslvpnProbe
-    command: ["sh", "-c", [
-      "test -x /usr/lib/nm-fortisslvpn-service",
-      "test -x /usr/libexec/nm-fortisslvpn-service",
-      "test -x /usr/lib/NetworkManager/nm-fortisslvpn-service",
-      "test -x /usr/lib/networkmanager/nm-fortisslvpn-service"
-    ].join(" || ")]
-    running: true
-    onExited: function(exitCode) {
-      root._fortisslvpnPresent = exitCode === 0
-      root._probeFinished()
-    }
-  }
-
         root.applyProfiles([])
         return
       }
@@ -469,6 +517,8 @@ Item {
           candidate.kind = "openconnect"
         } else if (NetworkManager.isVpncService(detail.serviceType)) {
           candidate.kind = "vpnc"
+        } else if (NetworkManager.isFortiSslVpnService(detail.serviceType)) {
+          candidate.kind = "fortisslvpn"
         } else if (!NetworkManager.isOpenVpnService(detail.serviceType)) {
           continue
         }
@@ -490,6 +540,15 @@ Item {
     stderr: StdioCollector { id: connectStderr; waitForEnd: true }
     onExited: function(exitCode) {
       var output = String(connectStderr.text || "") + "\n" + String(connectStdout.text || "")
+
+      // disconnect() killed this process to cancel a connect that was still
+      // negotiating. The kill itself doesn't reach NM's side of the
+      // activation — that still needs its own `connection down`.
+      if (root._stage === "cancel") {
+        root._stage = ""
+        cancelTimer.restart()
+        return
+      }
 
       // The old tunnel is down (or refused to come down, which is not a reason
       // to swallow the connect the user asked for). Either way, bring up the
@@ -517,8 +576,6 @@ Item {
         }
       } else {
         root.lastError = ""
-        } else if (NetworkManager.isFortiSslVpnService(detail.serviceType)) {
-          candidate.kind = "fortisslvpn"
       }
       root._pendingTarget = null
       root.actionStatus = ""
