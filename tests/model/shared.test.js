@@ -18,6 +18,23 @@ test("elide keeps short text and collapses whitespace", () => {
   eq(Shared.elide(null, 10), "")
 })
 
+test("pickSetup takes the hint and command from the first visible backend with a hint", () => {
+  const entries = [
+    { id: "proton", hint: "", command: "" },
+    { id: "warp", hint: "Cloudflare WARP: accept its terms", command: "warp-cli registration show" },
+    { id: "networkmanager", hint: "No profiles", command: undefined }
+  ]
+  eq(Shared.pickSetup(entries, []), { hint: "Cloudflare WARP: accept its terms", command: "warp-cli registration show" })
+  // Hiding WARP moves to the next hint, and never pairs it with WARP's command.
+  eq(Shared.pickSetup(entries, ["warp"]), { hint: "No profiles", command: "" })
+  eq(Shared.pickSetup(entries, ["warp", "networkmanager"]), { hint: "", command: "" })
+  // A detected backend has nothing to set up, whatever it says.
+  eq(Shared.pickSetup([{ id: "warp", detected: true, hint: "start the service", command: "sudo systemctl enable --now warp-svc" }], []),
+    { hint: "", command: "" })
+  // A command without a hint is not offered.
+  eq(Shared.pickSetup([{ id: "x", hint: "", command: "run me" }], []), { hint: "", command: "" })
+})
+
 test("applyPendingToggles marks only the flipped switch busy", () => {
   const toggles = [Shared.toggle("a", "A", "", false), Shared.toggle("b", "B", "", true)]
   const applied = Shared.applyPendingToggles(toggles, { a: true })

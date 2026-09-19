@@ -77,6 +77,24 @@ Panel {
     var list = Shared.sentenceList(names)
     return list === "" ? "" : "Install " + list + " to use this widget."
   }
+  // The status line is the setup hint, and that hint's backend knows the
+  // command that clears it: clicking the line runs it in a terminal.
+  readonly property bool setupActionable: !providersOpen && !backend
+    && vpn.detectedBackends.length === 0 && vpn.setupHint !== "" && vpn.setupCommand !== ""
+
+  // Same path as a backend's authRequired: the fix needs a person at a keyboard
+  // (a terms prompt, a sudo password), so a terminal owns it and the panel steps
+  // aside. Reopening the panel re-probes every backend, which is what brings the
+  // newly set-up tool in.
+  // Answers whether a terminal was actually asked for, so `setup` over IPC does
+  // not report a command it never ran.
+  function runSetupCommand() {
+    if (!root.bar || vpn.setupCommand === "") return false
+    root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(vpn.setupCommand))
+    root.close()
+    return true
+  }
+
   readonly property string statusLine: {
     if (providersOpen) return ""
     if (vpn.notice !== "") return vpn.notice
@@ -401,6 +419,15 @@ Panel {
     function refresh(): string { vpn.refreshAll(true); vpn.refreshPublicIp(); return "ok" }
     function status(): string { return vpn.barSummary }
     function ip(): string { return vpn.publicIp !== "" ? vpn.publicIp : "unknown" }
+    // The command that clears the setup hint, run in a terminal as a click on
+    // the hint would. Answers "none" when nothing needs setting up, and "no bar"
+    // when this instance has no bar to open a terminal from.
+    function setup(): string {
+      if (vpn.setupCommand === "") return "none"
+      var command = vpn.setupCommand
+      if (!root.runSetupCommand()) return "no bar"
+      return command
+    }
     function backends(): string {
       return vpn.availableBackends.map(function(b) { return b.backendId }).join(" ")
     }
@@ -688,10 +715,28 @@ Panel {
             visible: root.statusLine !== ""
             width: parent.width
             text: root.statusLine
-            color: root.statusIsError ? root.urgent : root.dim
+            // Brighter when clicking it does something, the same cue as the
+            // copyable public IP.
+            color: root.statusIsError ? root.urgent : (root.setupActionable ? root.foreground : root.dim)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
+            font.underline: root.setupActionable && setupMouse.containsMouse
             wrapMode: Text.WordWrap
+
+            MouseArea {
+              id: setupMouse
+              anchors.fill: parent
+              enabled: root.setupActionable
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.runSetupCommand()
+            }
+
+            PanelToolTip {
+              visible: setupMouse.containsMouse && root.setupActionable
+              text: "Open a terminal and run: " + vpn.setupCommand
+              fontFamily: root.fontFamily
+            }
           }
 
           Column {
@@ -817,8 +862,13 @@ Panel {
     // A provider row is the same row with a switch where the check mark goes:
     // it says whether the widget uses that tool, not whether it is connected.
     readonly property bool isProvider: row !== null && row.hidden !== undefined
-    // A hidden tool reads as switched off rather than as a row you could pick.
-    readonly property bool rowMuted: isProvider && row.hidden === true
+    // A hidden tool reads as switched off rather than as a row you could pick,
+    // and so does a target the backend will refuse: `blocked` is part of the
+    // target contract, and a row that cannot be connected should not look like
+    // one that can. Clicking it is still allowed, because the refusal carries
+    // the reason and a row that does nothing at all explains nothing.
+    readonly property bool rowMuted: (isProvider && row.hidden === true)
+      || (row !== null && row.blocked === true)
     readonly property bool isCurrent: !isProvider
       && root.backend !== null
       && row

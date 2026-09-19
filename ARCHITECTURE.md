@@ -16,9 +16,11 @@ surrounding workflow.
 | `ProtonBackend.qml` | Proton VPN, via the `protonvpn` CLI |
 | `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
 | `WindscribeBackend.qml` | Windscribe, via `windscribe-cli` |
+| `WarpBackend.qml` | Cloudflare WARP, via `warp-cli` |
 | `NetworkManagerBackend.qml` | OpenVPN, WireGuard, OpenConnect and VPNC, via NetworkManager |
+| `AmneziaWgBackend.qml` | AmneziaWG, via `awg` and `awg-quick` |
 | `model/Shared.js` | Helpers every backend leans on, and the widget's own settings |
-| `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/NetworkManager.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
+| `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/Warp.js`, `model/NetworkManager.js`, `model/AmneziaWg.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
 
 Each backend is a pair: the `.qml` file holds the `Process` plumbing, and the
 matching `model/*.js` holds everything that can be decided without running a
@@ -38,7 +40,7 @@ duck-types, so a backend that omits something simply renders as blank.
 
 | Property | Meaning |
 |----------|---------|
-| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `networkmanager`) |
+| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `warp`, `networkmanager`, `amneziawg`) |
 | `label` | Name on the switcher chip and hero. Also what `preferredBackend` stores, so it must match that enum in `manifest.json` exactly |
 | `installNames` | What a user would install to make this backend useful, as a list. The panel joins them into its "install something" line when no tool is detected. Usually one name and the same as `label` — NetworkManager is the exception, offering `["OpenVPN", "WireGuard", "OpenConnect", "VPNC"]`, because nobody installs a connection manager to get a VPN |
 | `glyph` | Nerd Font character for the hero icon |
@@ -53,7 +55,7 @@ duck-types, so a backend that omits something simply renders as blank.
 | `connected` | A tunnel is up |
 | `summary` | One line under the hero title |
 | `details` | `[{ label, value }]` rows shown while connected |
-| `targets` | `[{ key, label, detail, glyph, args }]` — the connectable list |
+| `targets` | `[{ key, label, detail, glyph, args }]` — the connectable list. A target may also carry `blocked: true`, meaning the backend will refuse it: the panel dims the row, and clicking it still goes through so the refusal can say why |
 | `currentKey` | The `key` of the target currently connected, or `""` |
 | `emptyText` | Shown when `targets` is empty |
 | `toggles` | `[{ key, label, detail, value, busy }]` — the tool's own settings. Omit it, or return `[]`, and the panel draws no settings block |
@@ -72,8 +74,9 @@ so the controller can call it unconditionally.
 
 `toggleConnection()` is the backend's own idea of a default connection — Proton
 picks the fastest server; Mullvad reuses its stored relay constraint; Windscribe
-takes its best location; NetworkManager connects the only profile if there is
-exactly one, and otherwise asks the user to pick.
+takes its best location; WARP connects in whichever mode is already set; AmneziaWG connects the only local profile if there is
+exactly one, and otherwise asks the user to pick; NetworkManager does the same
+for its profiles.
 
 A backend may also expose `lockdownMode`, meaning "this tool blocks all traffic
 while it is disconnected". The controller warns about it before tearing that
@@ -84,6 +87,15 @@ It may also expose `setupHint`: one line explaining why it is not `detected`
 and what would change that. The panel shows the first non-empty hint in place
 of its own "install a VPN tool" line, which is the wrong advice for a tool that
 is installed and merely has nothing to connect to yet.
+
+A backend with a `setupHint` may add `setupCommand`: the shell command that
+clears it, such as `warp-cli registration show`. The panel then draws the hint
+as clickable and runs the command in a floating terminal — the same path as
+`authRequired` — because what it fixes needs a person at the keyboard: a terms
+prompt, a sudo password, a sign-in. The controller takes the command from the
+same backend whose hint it shows, so the line and what clicking it runs never
+disagree. A detected backend's hint and command are ignored, since a tool that
+is listed has nothing to set up. It is also on IPC as `setup`.
 
 ## Adding a backend
 
@@ -158,16 +170,23 @@ not three. `_configLoaded` and `countriesLoaded` both mean *asked and answered* 
 latched on the answer, not on the answer being usable — and `detect(force)` is
 what clears them, which is the user opening the panel or pressing `r`.
 
-The status read that remains runs at the rate the answer can change, not at the
-controller's. Connected reads every tick: a tunnel that drops behind a closed
-panel leaves the chip claiming protection nobody has, and overstating protection
-is the one wrong answer worth a Python start to avoid. Disconnected reads every
-fourth — understating it is harmless by comparison, and the only thing that makes
-it connected is somebody acting, either through the widget (`refreshNow()`, which
-is what `settleTimer` and a finished action use, ignores the cadence) or at a
-terminal, which the next slow tick catches inside a minute. Signed out does not
-read at all. Idle goes from twelve spawns a minute to one, or to none, and a
-two-monitor desktop instantiates all of this twice.
+The status read that remains runs when the answer changes, not at the
+controller's rate, because every `protonvpn` is a connect-read-disconnect cycle
+against the Secret Service, and at the poll's rate that cycle aborts
+gnome-keyring-daemon, taking every other application's keyring connection with
+it ([#42](https://github.com/jkoestinger/omarchy-vpn/issues/42)). Each tick asks
+NetworkManager instead, through `nmcli -t -f NAME,STATE connection show
+--active`: every protocol the Proton client supports imports its tunnel there as
+`ProtonVPN <server>`. `protonTunnel()` reduces that to a fingerprint of name and
+state — the state, so a connect started at a terminal is seen finishing and not
+only starting — and `protonProbe()` reads the status when the fingerprint moves.
+A finished action (`refreshNow()`, which `settleTimer` also uses) and opening
+the panel read regardless, and tell the probe to record rather than ask again.
+A failed read, or an nmcli that cannot answer, retries once a minute instead of
+every tick, since a failing keyring is the last thing to hammer. Signed out
+neither probes nor reads. The price is a `Load` row as old as the last read. The
+probe also only notices a drop that NetworkManager notices; so did the CLI,
+which reads the same state.
 
 Signed out is the case that made this matter: `protonvpn status` exits 0 and
 prints `Status: Disconnected`, so `detected` stays true and the poll runs
@@ -352,6 +371,25 @@ tunnel is down; the setting itself is read separately with
 `mullvad lockdown-mode get`, because the case that matters — Mullvad connected,
 another backend about to take over — is exactly when the payload omits it.
 
+**WARP has modes, not places.** Cloudflare routes through the nearest data
+centre and deliberately keeps the user's country as the exit location, so there
+is no list of countries to offer. `targets` are WARP's tunnel modes, and only the
+ones that carry the machine's traffic: DNS-only and proxy modes would leave the
+switch showing a tunnel that protects nothing. `connectTo` sets the mode only
+when it differs from the one `settings list` last reported, then connects — the
+same stop-on-failure chain as Mullvad's, for the same reason.
+
+**WARP's terms are the user's to accept.** Without a TTY, every `warp-cli`
+command prints `Please accept the WARP Terms of Service …` and does nothing until
+the terms were accepted once, and `--accept-tos` would accept them silently. The
+backend never passes it. The refusal exits 1 and is recognised from that line,
+so the error names the fix, and `setupHint` tells the user to run
+`warp-cli registration show` in a terminal.
+`detected` also needs a registration, since an unregistered client has nothing to
+bring up; a registration probe that fails after a good one keeps the device
+listed, so a stopped `warp-svc` shows its error on the chip instead of taking the
+chip away.
+
 **Why OpenVPN, WireGuard, OpenConnect and VPNC share one backend.** Same listing
 call, same teardown, same secret-agent problem, and no settings of their own on
 any side. Four chips would have meant four views of one manager. NetworkManager
@@ -414,6 +452,38 @@ and picking one is never a request for both. So `connectTo` runs two commands
 when something else is up: down the active profile, then up the chosen one. A
 failed teardown still proceeds, for the same reason the controller's does.
 
+**AmneziaWG reads the config, the shell only fetches it.** `awg-quick` has no
+daemon to ask, so everything the panel knows about a profile comes out of the
+`.conf` file. The listing concatenates every readable profile into one stream —
+a `#awg-profile <path>` header, then the file indented by a tab — and
+`model/AmneziaWg.js` decides from there whether it carries root hooks, where it
+goes and whether it takes the default route. Doing any of that in the shell
+would put the security decision in the untested half; the one thing the shell
+does decide is that key material never leaves the file, because a private key
+held in a long-lived QML string is a private key one stray error message away
+from the panel.
+
+**A hook check has to read the config the way awg-quick does.** `PreUp`,
+`PostUp`, `PreDown` and `PostDown` run arbitrary commands as root the moment the
+interface comes up, and a dropped-in `.conf` is exactly how one arrives. The
+check matches awg-quick's own parser — `#` comments out the rest of the line
+wherever it appears, `;` comments out nothing, and matching is case-insensitive
+under its `shopt -s nocasematch` — so `postup = …` is caught and
+`Address = … # PostUp = …` is not a false positive. Where it deliberately
+differs, it is stricter: awg-quick honours these only inside `[Interface]`, and
+this blocks them anywhere.
+
+**An interface that is up always gets a row, config or not.** awg-quick's own
+directory is `/etc/amnezia/amneziawg`, root-owned and unreadable to the user the
+shell runs as, so `sudo awg-quick up work` produces a tunnel with nothing in the
+listing behind it. Listing only what can be read would leave the backend
+undetected, take the chip away, and with it the only way to bring down the
+tunnel carrying the user's traffic. So `awg show interfaces` is the second half
+of the list: anything up without a config of its own is synthesized as a row
+from its interface name, which is all `awg-quick down` needs. The same row keeps
+a tunnel reachable when its config is deleted or renamed mid-session — a listing
+that cannot see a profile is stale, not proof the tunnel ended.
+
 **Nerd Font glyphs** are built with `String.fromCodePoint` rather than pasted as
 literal characters, because editing tools routinely mangle multi-byte sequences
 in QML.
@@ -452,7 +522,7 @@ Check a manifest change with `omarchy plugin validate .` before committing.
 
 ## Tests
 
-The `model/` files are where every assumption about how four CLIs format their
+The `model/` files are where every assumption about how five CLIs format their
 output lives, and they are the only half of the widget that runs without a QML
 engine. The suite covers them:
 

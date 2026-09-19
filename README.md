@@ -4,15 +4,15 @@ A VPN widget for the Omarchy bar. One icon shows whether you are behind a
 tunnel; one panel connects, disconnects, and switches between the VPN tools you
 actually have installed.
 
-It supports **Proton VPN**, **Mullvad**, **Windscribe**, and the **OpenVPN**, **OpenConnect** and
-**WireGuard** profiles NetworkManager holds. Only the tools
+It supports **Proton VPN**, **Mullvad**, **Windscribe**, **Cloudflare WARP**, **AmneziaWG**, and the **OpenVPN**,
+**OpenConnect** and **WireGuard** profiles NetworkManager holds. Only the tools
 that have something to offer appear — install none and the widget tells you so;
 have several and a chip row lets you switch between them.
 
 <img src="preview.png" alt="The VPN panel open in the Omarchy bar, showing a Proton VPN connection to Zurich and a country list" width="365">
 
 Each installed tool gets its own chip and its own view — Proton VPN above,
-[Mullvad](#mullvad), [Windscribe](#windscribe) and
+[Mullvad](#mullvad), [Windscribe](#windscribe), [AmneziaWG](#amneziawg) and
 [NetworkManager](#networkmanager-profiles) below.
 
 ## Install
@@ -68,9 +68,9 @@ Inside the panel:
 - **The list** is what you can connect to: for Proton VPN, fastest / P2P /
   random / Secure Core followed by every country; for Mullvad, any location
   followed by every country it has relays in; for Windscribe, best location
-  followed by every region it serves; for NetworkManager, your OpenVPN and
-  WireGuard profiles, told apart by their icon. A check mark marks where you are
-  connected.
+  followed by every region it serves; for AmneziaWG, each local profile; for
+  NetworkManager, your OpenVPN and WireGuard profiles, told apart by their icon.
+  A check mark marks where you are connected.
 
 Keyboard, once the panel is open: `j`/`k` or arrows move — through the header,
 the chips, the name row, the settings switches if they are open, then the list —
@@ -91,6 +91,11 @@ Omarchy with its Quickshell desktop, plus at least one of:
   (`mullvad account login <number>`).
 - **Windscribe** — `windscribe-cli` with the Windscribe app running, logged in
   (`windscribe-cli login`).
+- **Cloudflare WARP** — `warp-cli` with `warp-svc` running, the device
+  registered (`warp-cli registration new`), and WARP's terms accepted once in a
+  terminal.
+- **AmneziaWG** — `awg` and `awg-quick` from `amneziawg-tools`, with at least
+  one `.conf` profile in `~/.config/omarchy/vpn/awg-profiles/`.
 - **OpenVPN, WireGuard, OpenConnect or VPNC** — `nmcli`, plus `openvpn`, `wg`
   (wireguard-tools), `networkmanager-openconnect`, or `networkmanager-vpnc`,
   with at least one profile imported into NetworkManager.
@@ -105,7 +110,7 @@ Configure these in **Setup › Plugins**, or in the widget's entry in
 | `refreshIntervalSec` | `15` | How often the connection status is polled |
 | `preferredBackend` | `Auto` | Which tool the panel opens on. `Auto` picks whichever is connected |
 | `favoriteCountries` | `CH,NL,US` | Country codes pinned to the top of the Proton VPN and Mullvad lists. Windscribe has no codes, so it matches names instead — see below |
-| `hiddenBackends` | *(empty)* | Tools the widget ignores entirely: `proton`, `mullvad`, `windscribe`, `networkmanager`. The gear inside the panel writes this |
+| `hiddenBackends` | *(empty)* | Tools the widget ignores entirely: `proton`, `mullvad`, `windscribe`, `warp`, `networkmanager`, `amneziawg`. The gear inside the panel writes this |
 
 ## Mullvad
 
@@ -168,6 +173,62 @@ run while another copy of itself is running, exiting with `Windscribe CLI is
 already running` rather than waiting its turn. The widget serialises its own calls
 and retries the ones that lose the race, so a command you run yourself at a
 terminal costs the panel a moment and nothing more.
+
+## Cloudflare WARP
+
+WARP is not a pick-a-country VPN. Cloudflare routes through the data centre
+nearest you and keeps your own country as the exit location, so the list offers
+WARP's tunnel modes instead of places: **WARP** (all traffic through Cloudflare)
+and **WARP with DNS over HTTPS**. Picking one sets `warp-cli mode` if it differs,
+then connects. While connected the panel shows the data centre, mode, protocol,
+latency and account type, plus a Network line when WARP reports the
+network as anything but healthy.
+
+DNS-only (`doh`, `dot`) and proxy modes are left out: they carry none of the
+machine's other traffic, so the switch would show a tunnel that protects nothing.
+Set them with `warp-cli mode` if you want them.
+
+The widget never passes `--accept-tos`. Without a terminal, `warp-cli` refuses
+every command until WARP's terms were accepted once, and agreeing to them is for
+you to do. Until then the panel says so instead of listing WARP; click that line
+and it opens a terminal running `warp-cli registration show`, where you answer
+the prompt yourself, then reopen the panel.
+
+Switching to another tool runs `warp-cli disconnect`, which also turns off
+WARP's own Always On, so it stays off until you connect it again.
+
+## AmneziaWG
+
+AmneziaWG profiles are regular `awg-quick` configuration files. Put exported
+`.conf` files in `~/.config/omarchy/vpn/awg-profiles/`; the directory is created
+automatically when the widget first checks for profiles, and the
+**AmneziaWG profile directory** setting points it somewhere else. Each file
+becomes a row on the AmneziaWG chip, named after its filename — for example,
+`home.conf` appears as **home**.
+
+`awg-quick`'s own directory, `/etc/amnezia/amneziawg/`, is read too where its
+files are readable to you; they are normally root-only, so a tunnel started with
+`sudo awg-quick up work` instead shows up as a row while it is running, marked
+as started outside the widget. Its rows exist so you can take it down from the
+panel — there is nothing to reconnect to once it is off.
+
+Profiles normally contain a private key. The widget creates the directory with
+owner-only access (`0700`), but does not change an existing profile's mode; keep
+each `.conf` readable only by your user, for example with `chmod 600 *.conf`.
+
+The chip appears only when `awg` and `awg-quick` are both installed and there is
+at least one profile to show. Selecting a profile brings it up with `awg-quick`;
+selecting another takes the first one down before bringing the new one up, so
+the widget does not leave two AmneziaWG tunnels running.
+
+Bringing a profile up or down needs root privileges. The widget normally opens
+a Polkit prompt through `pkexec`; with a `NOPASSWD` sudo rule for `awg-quick`,
+it uses `sudo -n` instead and does not prompt.
+
+For safety, profiles containing `PreUp`, `PostUp`, `PreDown`, or `PostDown`
+hooks are shown as blocked and cannot be connected from the widget. Those
+directives execute arbitrary commands as root through `awg-quick`; remove the
+hooks or run a profile you trust directly from a terminal instead.
 
 ## NetworkManager profiles
 
@@ -290,11 +351,12 @@ it:
 ```bash
 omarchy-shell jkoestinger.vpn status       # "Proton VPN · CH#1129 · Zurich, Switzerland"
 omarchy-shell jkoestinger.vpn ip           # current public address
-omarchy-shell jkoestinger.vpn backends     # "proton mullvad windscribe networkmanager"
+omarchy-shell jkoestinger.vpn backends     # "proton mullvad windscribe warp networkmanager amneziawg"
 omarchy-shell jkoestinger.vpn use mullvad  # switch the panel's active tool
 omarchy-shell jkoestinger.vpn connect CH   # country code, region or profile name, or row key
 omarchy-shell jkoestinger.vpn quickconnect # each tool's default connection
 omarchy-shell jkoestinger.vpn disconnect
+omarchy-shell jkoestinger.vpn setup        # run the setup hint's command in a terminal
 omarchy-shell jkoestinger.vpn toggle       # open or close the panel
 ```
 

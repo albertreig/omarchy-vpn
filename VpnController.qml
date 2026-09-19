@@ -14,6 +14,7 @@ import "model/Shared.js" as Shared
 //   filter                           panel writes the current filter text here
 //   detected                         tool is installed and has something to offer
 //   setupHint                        optional: what to do about being undetected
+//   setupCommand                     optional: terminal command that resolves setupHint
 //   connected, summary               headline state
 //   details                          [{ label, value }] shown while connected
 //   targets                          [{ key, label, detail, glyph, args }]
@@ -34,7 +35,8 @@ Item {
   // Set when the user picks a chip; "" follows `preferredBackend`.
   property string selectedId: ""
 
-  readonly property var backends: [proton, mullvad, windscribe, networkManager]
+  // The order of the chips, and of the setup hints: the first hint wins.
+  readonly property var backends: [proton, mullvad, windscribe, warp, networkManager, amneziaWg]
   // Tools this machine has. Hiding one is a statement about the widget, not
   // about the machine, so the settings view lists these — including the hidden
   // ones, which would otherwise be unreachable once they were switched off.
@@ -99,14 +101,16 @@ Item {
   // An installed tool with nothing to show hides itself, so the panel would
   // otherwise tell you to install what you already have. Optional: a backend
   // without the property simply has nothing to say.
-  readonly property string setupHint: {
-    for (var i = 0; i < backends.length; i++) {
-      if (isHidden(backends[i].backendId)) continue
-      var hint = backends[i].setupHint
-      if (hint !== undefined && String(hint) !== "") return String(hint)
-    }
-    return ""
-  }
+  //
+  // `setupCommand` resolves that hint and comes from the same backend, so the
+  // panel can run it when the hint is clicked. Empty when that backend has no
+  // command to offer; the hint is then text and nothing more. The properties are
+  // read here rather than inside Shared.pickSetup so the binding tracks them.
+  readonly property var _setup: Shared.pickSetup(backends.map(function(backend) {
+    return { id: backend.backendId, detected: backend.detected, hint: backend.setupHint, command: backend.setupCommand }
+  }), hiddenBackendIds)
+  readonly property string setupHint: _setup.hint
+  readonly property string setupCommand: _setup.command
 
   // ------------------------------------------------------------- public IP
 
@@ -367,8 +371,18 @@ Item {
     settings: root.settings
   }
 
+  WarpBackend {
+    id: warp
+    settings: root.settings
+  }
+
   NetworkManagerBackend {
     id: networkManager
+    settings: root.settings
+  }
+
+  AmneziaWgBackend {
+    id: amneziaWg
     settings: root.settings
   }
 
