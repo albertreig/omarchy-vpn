@@ -55,7 +55,7 @@ duck-types, so a backend that omits something simply renders as blank.
 | `connected` | A tunnel is up |
 | `summary` | One line under the hero title |
 | `details` | `[{ label, value }]` rows shown while connected |
-| `targets` | `[{ key, label, detail, glyph, args }]` — the connectable list |
+| `targets` | `[{ key, label, detail, glyph, args }]` — the connectable list. A target may also carry `blocked: true`, meaning the backend will refuse it: the panel dims the row, and clicking it still goes through so the refusal can say why |
 | `currentKey` | The `key` of the target currently connected, or `""` |
 | `emptyText` | Shown when `targets` is empty |
 | `toggles` | `[{ key, label, detail, value, busy }]` — the tool's own settings. Omit it, or return `[]`, and the panel draws no settings block |
@@ -451,6 +451,38 @@ backends, but NetworkManager will happily run two of its own profiles at once,
 and picking one is never a request for both. So `connectTo` runs two commands
 when something else is up: down the active profile, then up the chosen one. A
 failed teardown still proceeds, for the same reason the controller's does.
+
+**AmneziaWG reads the config, the shell only fetches it.** `awg-quick` has no
+daemon to ask, so everything the panel knows about a profile comes out of the
+`.conf` file. The listing concatenates every readable profile into one stream —
+a `#awg-profile <path>` header, then the file indented by a tab — and
+`model/AmneziaWg.js` decides from there whether it carries root hooks, where it
+goes and whether it takes the default route. Doing any of that in the shell
+would put the security decision in the untested half; the one thing the shell
+does decide is that key material never leaves the file, because a private key
+held in a long-lived QML string is a private key one stray error message away
+from the panel.
+
+**A hook check has to read the config the way awg-quick does.** `PreUp`,
+`PostUp`, `PreDown` and `PostDown` run arbitrary commands as root the moment the
+interface comes up, and a dropped-in `.conf` is exactly how one arrives. The
+check matches awg-quick's own parser — `#` comments out the rest of the line
+wherever it appears, `;` comments out nothing, and matching is case-insensitive
+under its `shopt -s nocasematch` — so `postup = …` is caught and
+`Address = … # PostUp = …` is not a false positive. Where it deliberately
+differs, it is stricter: awg-quick honours these only inside `[Interface]`, and
+this blocks them anywhere.
+
+**An interface that is up always gets a row, config or not.** awg-quick's own
+directory is `/etc/amnezia/amneziawg`, root-owned and unreadable to the user the
+shell runs as, so `sudo awg-quick up work` produces a tunnel with nothing in the
+listing behind it. Listing only what can be read would leave the backend
+undetected, take the chip away, and with it the only way to bring down the
+tunnel carrying the user's traffic. So `awg show interfaces` is the second half
+of the list: anything up without a config of its own is synthesized as a row
+from its interface name, which is all `awg-quick down` needs. The same row keeps
+a tunnel reachable when its config is deleted or renamed mid-session — a listing
+that cannot see a profile is stale, not proof the tunnel ended.
 
 **Nerd Font glyphs** are built with `String.fromCodePoint` rather than pasted as
 literal characters, because editing tools routinely mangle multi-byte sequences

@@ -34,10 +34,13 @@ Item {
   property string lastError: ""
 
   property bool _awgPresent: false
+  property bool _awgQuickPresent: false
+  property int _probesDone: 0
   property bool _probed: false
-  // Detected once at startup: does `sudo -n awg-quick ...` work without a
-  // password prompt? If so, elevate() prefers it over pkexec so connecting is
-  // silent on machines with a NOPASSWD sudoers rule for awg-quick.
+  // Asked once, the first time there is a list worth building: does
+  // `sudo -n awg-quick ...` work without a password prompt? If so, elevate()
+  // prefers it over pkexec so connecting is silent on machines with a NOPASSWD
+  // sudoers rule for awg-quick.
   property bool _sudoNoPasswd: false
   property bool _sudoProbed: false
 
@@ -54,11 +57,15 @@ Item {
   // taken down, "final" while the picked one comes up.
   property string _stage: ""
 
-  readonly property bool _toolsPresent: _awgPresent
-  // Having awg-quick is not having anything to connect to, and unlike
-  // NetworkManager this backend cannot discover a profile it did not put
-  // there itself — see NetworkManagerBackend for the same reasoning applied
-  // to a tool with a daemon behind it.
+  // `awg` reads status and `awg-quick` brings tunnels up and down; they ship in
+  // the same package but need not both be installed, and a machine with only
+  // `awg` would draw a working chip whose every connect fails.
+  readonly property bool _toolsPresent: _awgPresent && _awgQuickPresent
+  // Having awg-quick is not having anything to connect to, and a chip leading
+  // to an empty list is a chip worth not drawing — the same reasoning
+  // NetworkManagerBackend applies to a tool with a daemon behind it. The list
+  // is not only what is on disk: a tunnel someone started outside the widget
+  // counts, which is what keeps the chip there to take it down again.
   readonly property bool detected: _toolsPresent && profiles.length > 0
   readonly property bool _activeNow: AmneziaWg.activeAwgProfile(profiles) !== null
   readonly property bool connected: _desired === -1 ? _activeNow : (_desired === 1)
@@ -85,22 +92,38 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
-  // Probing only. `detected` depends on the profile list, so the controller
-  // keeps calling this on a machine that has awg-quick but no profiles — but
-  // the discovery that would settle that belongs in refresh(), which the
-  // controller skips for a hidden backend. Once probed this is a no-op.
+  // Probing only, and once: binaries do not come and go while the shell runs,
+  // so a machine that answered "not installed" is asked again only when the
+  // user forces it. The listing that `detected` also depends on is started from
+  // _probeFinished rather than from here, so this stays a probe.
   function detect(force) {
-    if (awgProbe.running) return
+    if (awgProbe.running || awgQuickProbe.running) return
     if (_probed && force !== true) return
+    _probesDone = 0
     awgProbe.running = true
+    awgQuickProbe.running = true
   }
 
+  // The one listing a hidden backend gets. `detected` depends on the profile
+  // list, so without this a tool switched off once could never be listed in the
+  // settings view again — the controller calls `detect()` for a hidden backend
+  // and nothing else, so the discovery has to hang off the end of probing. Once
+  // per shell, not once per poll: `refresh()` from here and the contract's "no
+  // polling for a hidden tool" both hold. NetworkManagerBackend does the same.
   function _probeFinished() {
+    root._probesDone += 1
+    if (root._probesDone < 2) return
     root._probed = true
+    if (root._toolsPresent) root.refresh()
   }
 
   function refresh() {
     if (!_toolsPresent || listProcess.running || statusProcess.running) return
+    // Deferred until something is actually going to be listed, so a machine
+    // without amneziawg-tools — or one whose owner hid this backend — never
+    // spends a sudo invocation, and an auth.log line, on a question about a
+    // tool it will not use.
+    if (!_sudoProbed && !sudoProbe.running) sudoProbe.running = true
     listProcess.running = true
   }
 
@@ -161,22 +184,13 @@ Item {
   }
 
   // A config appearing mid-session (or being renamed) should show up, so the
-  // list carries a raw conf path to the parser instead of a name the widget
+  // list carries raw conf paths to the model instead of names the widget
   // invented. The active flag comes from `awg show interfaces`, matched on the
-  // interface name awg-quick derives from the basename.
+  // interface name awg-quick derives from the basename — and an up interface
+  // with no config behind it still gets a row, so it can be taken down. See
+  // AmneziaWg.buildProfiles for why that case is not theoretical.
   function applyProfiles(entries) {
-    var list = []
-    for (var i = 0; i < entries.length; i++) {
-      var item = entries[i]
-      var name = AmneziaWg.interfaceFor(item.path)
-      if (name === "") continue
-      list.push({
-        name: name,
-        confFile: item.path,
-        hasHooks: item.hasHooks === true,
-        active: root.upInterfaces.indexOf(name) !== -1
-      })
-    }
+    var list = AmneziaWg.buildProfiles(entries, root.upInterfaces)
     root.profiles = list
     if (_desired !== -1 && (AmneziaWg.activeAwgProfile(list) !== null) === (_desired === 1)) _desired = -1
   }
@@ -198,38 +212,53 @@ Item {
     }
   }
 
+  Process {
+    id: awgQuickProbe
+    command: ["omarchy-cmd-present", "awg-quick"]
+    running: true
+    onExited: function(exitCode) {
+      root._awgQuickPresent = exitCode === 0
+      root._probeFinished()
+    }
+  }
+
   // `sudo -n` fails immediately instead of prompting when a password would be
   // required, so this exits 0 only when a NOPASSWD sudoers rule already
   // covers awg-quick for this user.
   Process {
     id: sudoProbe
     command: ["sudo", "-n", "awg-quick", "--help"]
-    running: true
+    running: false
     onExited: function(exitCode) {
       root._sudoNoPasswd = exitCode === 0
       root._sudoProbed = true
     }
   }
 
-  // List *.conf profiles in the profiles directory and scan for dangerous root
-  // execution hooks (PostUp/PreUp/PreDown/PostDown) before offering to connect.
+  // Concatenate every readable profile into one stream for the model to read:
+  // a `#awg-profile <path>` header, then the file's lines indented by a tab.
+  // The whole config goes through because deciding what is in it — root hooks,
+  // endpoint, default route — is a decision, and decisions belong in model/
+  // where they are tested. What the shell does is fetch and sanitize: key
+  // material is replaced before it leaves the file, since nothing above this
+  // line needs it and a private key held in a long-lived QML string is a
+  // private key one stray error message away from the panel.
+  //
+  // awg-quick's own directory is scanned alongside the widget's. Its files are
+  // normally root-only, so `-r` skips them and the tunnels they start show up
+  // through `awg show interfaces` instead; where they are readable, they list.
   Process {
     id: listProcess
     running: false
     command: [
       "bash", "-c",
+      "shopt -s nullglob; " +
       "mkdir -m 0700 -p " + Util.shellQuote(root.profilesDir) + " 2>/dev/null; " +
-      "chmod 0700 " + Util.shellQuote(root.profilesDir) + " 2>/dev/null; " +
-      "for f in " + Util.shellQuote(root.profilesDir) + "/*.conf; do " +
+      "for f in " + Util.shellQuote(root.profilesDir) + "/*.conf /etc/amnezia/amneziawg/*.conf; do " +
       "  [[ -r \"$f\" ]] || continue; " +
-      "  h=\"safe\"; " +
-      "  if grep -Eiq '^[[:space:]]*(preup|postup|predown|postdown)[[:space:]]*=' \"$f\" 2>/dev/null; then " +
-      "    h=\"has_hooks\"; " +
-      "  elif (($? != 1)); then " +
-      "    h=\"has_hooks\"; " +
-      "  fi; " +
-      "  printf \"%s\\t%s\\n\" \"$f\" \"$h\"; " +
-      "done || true"
+      "  printf \"#awg-profile %s\\n\" \"$f\"; " +
+      "  sed -E 's/^(.*(PrivateKey|PresharedKey)[[:space:]]*=).*$/\\1 [redacted]/I; s/^/\\t/' \"$f\"; " +
+      "done"
     ]
     stdout: StdioCollector { id: listStdout; waitForEnd: true }
     stderr: StdioCollector { id: listStderr; waitForEnd: true }
@@ -239,7 +268,7 @@ Item {
         return
       }
       root.lastError = ""
-      root._pendingFiles = AmneziaWg.parseProfileListing(String(listStdout.text || ""))
+      root._pendingFiles = AmneziaWg.parseProfileBundle(String(listStdout.text || ""))
       statusProcess.running = true
     }
   }
@@ -272,6 +301,9 @@ Item {
     }
   }
 
+  // Throughput for the up interfaces, from the counters a normal user can read.
+  // The config keys that used to be scraped here are read by the model from the
+  // listing instead, so this stays two numbers and a name.
   Process {
     id: healthProcess
     running: false
@@ -279,38 +311,21 @@ Item {
       "bash", "-c",
       "for iface in $(awg show interfaces 2>/dev/null); do " +
       "[[ \"$iface\" =~ ^[a-zA-Z0-9_.-]+$ ]] || continue; " +
-      "rx=0; tx=0; ep=\"\"; allowed=\"\"; " +
+      "rx=0; tx=0; " +
       "[[ -r \"/sys/class/net/$iface/statistics/rx_bytes\" ]] && read -r rx < \"/sys/class/net/$iface/statistics/rx_bytes\"; " +
       "[[ -r \"/sys/class/net/$iface/statistics/tx_bytes\" ]] && read -r tx < \"/sys/class/net/$iface/statistics/tx_bytes\"; " +
-      "conf=" + Util.shellQuote(root.profilesDir) + "/\"${iface}.conf\"; " +
-      "if [[ -r \"$conf\" ]]; then " +
-      "  while IFS=\"=\" read -r rawk rawv || [[ -n \"$rawk\" ]]; do " +
-      "    k=\"${rawk//[[:space:]]/}\"; v=\"${rawv//[[:space:]]/}\"; " +
-      "    case \"${k,,}\" in " +
-      "      endpoint) ep=\"$v\" ;; " +
-      "      allowedips) allowed=\"$v\" ;; " +
-      "    esac; " +
-      "  done < \"$conf\"; " +
-      "fi; " +
-      "printf \"%s\\t%s\\t%s\\t%s\\t%s\\n\" \"$iface\" \"$rx\" \"$tx\" \"$ep\" \"$allowed\"; " +
+      "printf \"%s\\t%s\\t%s\\n\" \"$iface\" \"$rx\" \"$tx\"; " +
       "done"
     ]
     stdout: StdioCollector { id: healthStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) return
       var now = Date.now()
-      var next = AmneziaWg.parseSysfsStats(String(healthStdout.text || ""))
-      var previous = root._previousHealth
       var elapsed = root._healthSampleTime > 0 ? Math.max(0.001, (now - root._healthSampleTime) / 1000) : 0
-      for (var iface in next) {
-        var prior = previous[iface]
-        if (prior && elapsed > 0) {
-          next[iface].rxRate = Math.max(0, next[iface].rxBytes - prior.rxBytes) / elapsed
-          next[iface].txRate = Math.max(0, next[iface].txBytes - prior.txBytes) / elapsed
-        }
-      }
-      root.healthByInterface = next
-      root._previousHealth = next
+      var merged = AmneziaWg.mergeHealth(root._previousHealth, AmneziaWg.parseSysfsStats(String(healthStdout.text || "")), elapsed)
+      root.healthByInterface = merged.health
+      if (!merged.sampled) return
+      root._previousHealth = merged.health
       root._healthSampleTime = now
     }
   }

@@ -862,8 +862,13 @@ Panel {
     // A provider row is the same row with a switch where the check mark goes:
     // it says whether the widget uses that tool, not whether it is connected.
     readonly property bool isProvider: row !== null && row.hidden !== undefined
-    // A hidden tool reads as switched off rather than as a row you could pick.
-    readonly property bool rowMuted: isProvider && row.hidden === true
+    // A hidden tool reads as switched off rather than as a row you could pick,
+    // and so does a target the backend will refuse: `blocked` is part of the
+    // target contract, and a row that cannot be connected should not look like
+    // one that can. Clicking it is still allowed, because the refusal carries
+    // the reason and a row that does nothing at all explains nothing.
+    readonly property bool rowMuted: (isProvider && row.hidden === true)
+      || (row !== null && row.blocked === true)
     readonly property bool isCurrent: !isProvider
       && root.backend !== null
       && row
