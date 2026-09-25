@@ -39,11 +39,22 @@ Solo para desarrollar: `node` (para `node tests/run.js`) y `qmllint` (opcional).
 
 ```bash
 nmcli connection add type vpn vpn-type fortisslvpn ifname '*' con-name "MI_VPN" \
+  connection.autoconnect no \
   vpn.data "gateway=HOST:PUERTO, user=USUARIO, trusted-cert=HUELLA_SHA256"
 ```
 
+`HOST:PUERTO`, `USUARIO` y `HUELLA_SHA256` son marcadores: hay que sustituir **los tres** por los valores reales. Si se queda alguno tal cual, `openfortivpn` no entiende los argumentos, imprime su `Usage: ...` en el journal y NetworkManager solo dice `Unknown reason`.
+
 - `gateway`: incluye el puerto si no es el 443 (por ejemplo `vpn.ejemplo.com:10443`). Se pasa tal cual a `openfortivpn`.
-- `trusted-cert`: solo hace falta si el FortiGate usa un certificado autofirmado. Si falta, el intento falla y `journalctl -u NetworkManager` imprime la línea `trusted-cert = ...` con la huella exacta.
+- `trusted-cert`: solo hace falta si el FortiGate usa un certificado autofirmado (lo habitual: emisor `Fortinet`, CN `FGT...`). Si falta, el intento falla y `journalctl -u NetworkManager` imprime la línea `trusted-cert = ...` con la huella exacta. También se puede sacar antes de conectar:
+
+  ```bash
+  echo | openssl s_client -connect HOST:PUERTO 2>/dev/null \
+    | openssl x509 -noout -fingerprint -sha256 -subject -issuer \
+    | sed 's/://g; s/sha256 Fingerprint=//I'
+  ```
+
+  La primera línea es la huella: 64 caracteres hex sin `:` (mayúsculas o minúsculas da igual).
 - Comprobar que el puerto responde: `timeout 3 bash -c 'cat < /dev/null > /dev/tcp/HOST/PUERTO' && echo abierto`.
 
 ### Guardar la contraseña
@@ -59,11 +70,43 @@ nmcli> quit
 
 Ojo: la propiedad es `vpn.secrets` con `password = valor` dentro. `set vpn.secrets.password` da error.
 
+### Cambiar datos de un perfil ya creado
+
+`vpn.data` se reescribe entero, así que hay que pasar siempre los tres campos:
+
+```bash
+nmcli connection modify MI_VPN \
+  vpn.data "gateway=HOST:PUERTO, user=USUARIO, trusted-cert=HUELLA_SHA256"
+nmcli -g vpn.data connection show MI_VPN   # comprobar
+```
+
+La contraseña guardada no se toca al cambiar `vpn.data`.
+
+### Renombrar el perfil
+
+El nombre es el que aparece en la barra:
+
+```bash
+nmcli connection modify MI_VPN connection.id "NUEVO_NOMBRE"
+```
+
+### Conexión automática
+
+`nmcli connection add` crea los perfiles con `autoconnect` activado (por eso el comando de arriba lo pone a `no`). Para cambiarlo en un perfil existente:
+
+```bash
+nmcli connection modify MI_VPN connection.autoconnect no    # solo a mano
+nmcli connection modify MI_VPN connection.autoconnect yes   # conectar sola
+```
+
 ## Probar
 
 ```bash
-nmcli connection up MI_VPN
+nmcli connection up MI_VPN     # conectar
+nmcli connection down MI_VPN   # desconectar
 ```
+
+Si conecta, aparece la interfaz `ppp0` con una IP del rango del FortiGate (`ip -br addr show ppp0`) y la VPN pasa a ser la ruta por defecto para IPv4 y DNS.
 
 O desde el icono VPN de la barra. Si el perfil no aparece, `omarchy restart shell`.
 
@@ -74,7 +117,11 @@ O desde el icono VPN de la barra. Si el perfil no aparece, `omarchy restart shel
 | `No valid secrets` | Contraseña no guardada en el perfil (ver arriba) |
 | `connect timeout exceeded` | Puerto incorrecto o bloqueado; probar el puerto con el comando de arriba |
 | `Unknown reason` + error de certificado en el journal | Falta `trusted-cert` |
+| `Unknown reason` + `Usage: openfortivpn ...` en el journal | Quedan marcadores (`HOST:PUERTO`, `USUARIO`, `HUELLA_SHA256`) en `vpn.data` |
+| `Can't access /etc/ppp/ip-up: Permission denied` | Aviso inofensivo de `pppd`; la VPN funciona igual |
 | El perfil no aparece en la barra | Falta `networkmanager-fortisslvpn`, o reiniciar el shell |
+
+Ver qué ha pasado en el último intento: `journalctl -b --since "-5 min" | grep -iE "forti|vpn|ppp"`.
 
 Logs detallados: `sudo nmcli general logging level DEBUG domains VPN`, y al terminar `sudo nmcli general logging level INFO domains VPN`.
 
